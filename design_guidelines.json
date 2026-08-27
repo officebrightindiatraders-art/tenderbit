@@ -1,0 +1,105 @@
+{
+  "project_context": "Tender finance management system for Bright India Traders (Textile Trading).",
+  "theme_strategy": "light",
+  "archetype": "Swiss & High-Contrast (Authority, Clarity, Truth) adapted for Finance",
+  "typography": {
+    "heading_font": "Cabinet Grotesk, Work Sans",
+    "body_font": "IBM Plex Sans",
+    "weights": {
+      "headings": "font-semibold to font-bold",
+      "body": "font-normal",
+      "labels_and_numbers": "font-medium"
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl tracking-tight text-slate-900",
+      "h2": "text-xl sm:text-2xl tracking-tight text-slate-800",
+      "h3": "text-lg text-slate-800 font-semibold",
+      "body": "text-sm text-slate-600 leading-relaxed",
+      "small_labels": "text-xs tracking-[0.05em] uppercase text-slate-500 font-semibold"
+    },
+    "instructions": "IBM Plex Sans is mandatory for all numbers, tables, and financial data to ensure monospaced-like alignment. Never use Inter for headings."
+  },
+  "colors": {
+    "background": "#F8FAFC",
+    "surface": "#FFFFFF",
+    "primary": "#1E1B4B",
+    "primary_foreground": "#FFFFFF",
+    "accent": "#4F46E5",
+    "border": "#E2E8F0",
+    "muted": "#F1F5F9",
+    "foreground": "#0F172A",
+    "semantic": {
+      "profit_success": "#059669",
+      "profit_success_bg": "#D1FAE5",
+      "loss_danger": "#DC2626",
+      "loss_danger_bg": "#FEE2E2",
+      "pending_warning": "#D97706",
+      "pending_warning_bg": "#FEF3C7"
+    },
+    "instructions": "No full-screen gradients. Use flat, solid backgrounds. Never use Teal Green or Teal Blue (#1B93A4)."
+  },
+  "spacing_and_layout": {
+    "strategy": "Grid Mode B: High Density Grid (For Dashboards/Analytics)",
+    "container": "w-full max-w-full",
+    "density": "Tight. Use gap-4 or gap-6 for grid. Every pixel must be utilized for data.",
+    "alignment": "Strictly left-align labels, inputs, and dense content. Right-align numeric values in tables (currency, amounts).",
+    "navigation": "Use a collapsible left sidebar (w-64 expanded, w-16 collapsed) + top header for user/context.",
+    "paddings": "Use tight paddings inside table cells (py-2 px-3) to fit more data. Use p-4 to p-6 for cards."
+  },
+  "surface_and_borders": {
+    "style": "Grid Borders (The 'Technical' Look)",
+    "border_radius": "rounded-sm (4px) or completely square (0px). Do not use soft, highly rounded corners.",
+    "borders": "1px solid border-slate-200 on all cards and table rows.",
+    "shadows": "Remove default soft shadows. Use purely flat design with borders, or an extremely subtle shadow-sm. Add shadow-md ONLY on hover for interactive elements.",
+    "glassmorphism": "FORBIDDEN. Finance apps require absolute optical clarity. Use solid backgrounds."
+  },
+  "component_rules": {
+    "tables": "Striped rows (even:bg-slate-50) for readability. Sticky headers. Right-align all currency columns. Use Shadcn Table.",
+    "cards": "Cardless or flat cards with sharp 1px borders. No inner padding for tables inside cards (flush to edges).",
+    "forms": "Use dense grid layouts for forms (e.g., 3 columns for Transaction Ledger entry). Shadcn Input, Select, DatePicker.",
+    "buttons": "Sharp corners (rounded-sm), high contrast. Primary buttons are deep indigo (#1E1B4B).",
+    "tabs": "Override default Shadcn tabs to be dense. h-8 instead of h-9.",
+    "charts": "Use Recharts. Use monochromatic shades of Indigo for standard data, strictly Red/Green for P&L data."
+  },
+  "visual_enhancers": {
+    "texture": "Subtle cotton texture (opacity 3%) can be applied to the login screen background to nod to the textile industry, but keep internal dashboard completely clean.",
+    "currency": "Format all monetary values using Indian Rupee (₹). Ensure commas follow the Indian numbering system (e.g., ₹ 1,50,000)."
+  },
+  "accessibility_and_motion": {
+    "contrast": "Ensure minimum 4.5:1 contrast for all text. Red/Green must have clear icons (ArrowUp/ArrowDown) next to them, never rely on color alone.",
+    "hover_states": "Clearly define hover states (e.g., hover:bg-slate-100) for all interactive table rows and buttons.",
+    "focus": "focus:ring-2 focus:ring-indigo-500 focus:outline-none.",
+    "motion": "Minimalist. Entrance fade-in for charts. No bouncy animations.",
+    "testing": "All interactive elements MUST have data-testid attributes (e.g., data-testid='approve-tender-btn')."
+  },
+  "image_urls": {
+    "login_sidebar": {
+      "url": "https://images.unsplash.com/photo-1577962917302-cd874c4e31d2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwxfHxjb3Jwb3JhdGUlMjBvZmZpY2UlMjBpbmRpYXxlbnwwfHx8fDE3ODc4NDkzNDl8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Corporate office meeting, represents the B2B trading context. Use as a large side panel on the login screen."
+    },
+    "texture_overlay": {
+      "url": "https://images.pexels.com/photos/13368318/pexels-photo-13368318.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Subtle cotton texture. Can be blended at 2-5% opacity over the login panel."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize data density. The user is managing complex financial ledgers.",
+    "Ensure all numbers align properly (use tabular-nums utility if needed) and are formatted as ₹ XX,XX,XXX.",
+    "Build a robust Sidebar navigation + Topbar layout structure.",
+    "Transaction Ledger must have dropdowns for Stage, Category, and Vendor.",
+    "For the EBG (Earnest Bank Guarantee) Register, clearly highlight active vs expired guarantees.",
+    "Use Lucide-React (already installed) for clean, technical icons.",
+    "DO NOT use generic centered marketing layouts for the dashboard. It must look like a serious ERP.",
+    "Use sonner for toast notifications on save/approve actions."
+  ],
+  "universal_guidelines": [
+    "Do not converge toward generic 'AI slop' aesthetics. Make it distinctive.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Create depth through layered design elements with z-index hierarchy, but keep surfaces flat (borders over shadows).",
+    "You MUST NOT apply universal transition (e.g., transition: all). Add specific transitions.",
+    "You MUST NOT center align the app container (.App { text-align: center; }).",
+    "Never use AI assistant Emoji characters for icons.",
+    "Every interaction needs micro-animations (hover states, focus rings).",
+    "Main agent must use provided image URLs and NEVER use placeholder URLs."
+  ]
+}
