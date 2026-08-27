@@ -543,8 +543,10 @@ async def apply_aoc(tender_id: str, body: dict, user: dict = Depends(not_viewer)
 
 # ---------- Tenders ----------
 @api.get("/tenders")
-async def list_tenders(user: dict = Depends(get_current_user), status: Optional[str] = None):
-    q = {"status": status} if status else {}
+async def list_tenders(user: dict = Depends(get_current_user), status: Optional[str] = None, include_archived: bool = False):
+    q = {}
+    if status: q["status"] = status
+    if not include_archived: q["archived"] = {"$ne": True}
     return await db.tenders.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 @api.post("/tenders")
@@ -563,12 +565,87 @@ async def get_tender(tender_id: str, user: dict = Depends(get_current_user)):
     return t
 
 @api.patch("/tenders/{tender_id}")
-async def update_tender(tender_id: str, payload: TenderIn, user: dict = Depends(not_viewer)):
+async def update_tender(tender_id: str, payload: dict, user: dict = Depends(not_viewer)):
     before = await db.tenders.find_one({"id": tender_id}, {"_id": 0})
-    await db.tenders.update_one({"id": tender_id}, {"$set": payload.model_dump()})
+    if not before: raise HTTPException(404, "Not found")
+    allowed = {"tender_no", "department", "name", "tender_date", "closing_date",
+               "tender_value", "emd_amount", "status", "responsible", "notes",
+               "contract_no", "contract_date", "contract_value", "delivery_date"}
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates: raise HTTPException(400, "Nothing to update")
+    await db.tenders.update_one({"id": tender_id}, {"$set": updates})
     after = await db.tenders.find_one({"id": tender_id}, {"_id": 0})
     await audit_write("tender", tender_id, "update", user["email"], before=before, after=after)
     return after
+
+
+@api.get("/tenders/{tender_id}/references")
+async def tender_references(tender_id: str, user: dict = Depends(get_current_user)):
+    """Count of records that would be affected if this tender is deleted."""
+    counts = {
+        "items": await db.items.count_documents({"tender_id": tender_id}),
+        "transactions": await db.transactions.count_documents({"tender_id": tender_id}),
+        "invoices": await db.invoices.count_documents({"tender_id": tender_id}),
+        "ebg": await db.ebg.count_documents({"tender_id": tender_id}),
+        "documents": await db.documents.count_documents({"tender_id": tender_id}),
+    }
+    counts["total"] = sum(counts.values())
+    counts["safe_to_delete"] = counts["total"] == 0
+    return counts
+
+
+@api.delete("/tenders/{tender_id}")
+async def delete_tender(tender_id: str, force: bool = Query(False), user: dict = Depends(require_admin)):
+    """Hard-delete a tender only if it has no linked records. Otherwise ask user to Archive."""
+    tender = await db.tenders.find_one({"id": tender_id}, {"_id": 0})
+    if not tender: raise HTTPException(404, "Not found")
+    refs = {
+        "items": await db.items.count_documents({"tender_id": tender_id}),
+        "transactions": await db.transactions.count_documents({"tender_id": tender_id}),
+        "invoices": await db.invoices.count_documents({"tender_id": tender_id}),
+        "ebg": await db.ebg.count_documents({"tender_id": tender_id}),
+        "documents": await db.documents.count_documents({"tender_id": tender_id}),
+    }
+    total = sum(refs.values())
+    if not force and total > 0:
+        parts = [f"{v} {k}" for k, v in refs.items() if v > 0]
+        raise HTTPException(409, f"Tender has {', '.join(parts)}. Archive it instead, or pass ?force=true to delete everything.")
+    # Delete tender + children
+    await db.items.delete_many({"tender_id": tender_id})
+    await db.transactions.delete_many({"tender_id": tender_id})
+    for inv in await db.invoices.find({"tender_id": tender_id}, {"_id": 0}).to_list(500):
+        await db.receipts.delete_many({"invoice_id": inv["id"]})
+    await db.invoices.delete_many({"tender_id": tender_id})
+    await db.ebg.delete_many({"tender_id": tender_id})
+    # Soft-delete docs (keep files audit-preserved)
+    docs = await db.documents.find({"tender_id": tender_id}, {"_id": 0}).to_list(500)
+    for d in docs:
+        await db.files.update_one({"id": d["file_id"]}, {"$set": {"is_deleted": True}})
+    await db.documents.delete_many({"tender_id": tender_id})
+    await db.tenders.delete_one({"id": tender_id})
+    await audit_write("tender", tender_id, "delete", user["email"], before=tender,
+                      note=f"force={force}; deleted {refs['transactions']} txns, {refs['invoices']} invoices, {refs['ebg']} EBGs")
+    return {"ok": True, "deleted": True}
+
+
+@api.post("/tenders/{tender_id}/archive")
+async def archive_tender(tender_id: str, body: dict = None, user: dict = Depends(not_viewer)):
+    body = body or {}
+    reason = body.get("reason", "")
+    t = await db.tenders.find_one({"id": tender_id})
+    if not t: raise HTTPException(404, "Not found")
+    await db.tenders.update_one({"id": tender_id}, {"$set": {"archived": True, "archive_reason": reason, "archived_at": now_iso(), "archived_by": user["email"]}})
+    await audit_write("tender", tender_id, "archive", user["email"], note=reason)
+    return {"ok": True}
+
+
+@api.post("/tenders/{tender_id}/unarchive")
+async def unarchive_tender(tender_id: str, user: dict = Depends(not_viewer)):
+    t = await db.tenders.find_one({"id": tender_id})
+    if not t: raise HTTPException(404, "Not found")
+    await db.tenders.update_one({"id": tender_id}, {"$unset": {"archived": "", "archive_reason": "", "archived_at": "", "archived_by": ""}})
+    await audit_write("tender", tender_id, "unarchive", user["email"])
+    return {"ok": True}
 
 @api.post("/tenders/{tender_id}/status")
 async def update_status(tender_id: str, body: dict, user: dict = Depends(not_viewer)):

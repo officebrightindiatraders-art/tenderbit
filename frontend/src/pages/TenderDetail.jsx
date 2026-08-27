@@ -4,7 +4,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { formatINR, formatDate, todayISO } from '@/lib/format';
 import { toast } from 'sonner';
-import { ArrowLeft, Plus, Sparkles, Upload, FileText, Trash2, ExternalLink, X } from 'lucide-react';
+import { ArrowLeft, Plus, Sparkles, Upload, FileText, Trash2, ExternalLink, X, Edit3, Archive, MoreVertical } from 'lucide-react';
 
 const DOC_TYPES = [
   { key: 'tender_document', label: 'Tender Document' },
@@ -20,6 +20,7 @@ const DOC_TYPES = [
 
 export default function TenderDetail() {
   const { id } = useParams();
+  const nav = useNavigate();
   const { masters, user } = useAuth();
   const [tender, setTender] = useState(null);
   const [items, setItems] = useState([]);
@@ -30,6 +31,9 @@ export default function TenderDetail() {
   const [showInv, setShowInv] = useState(false);
   const [showAOC, setShowAOC] = useState(false);
   const [showDocUpload, setShowDocUpload] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [showActions, setShowActions] = useState(false);
 
   const load = async () => {
     const [t, i, p, inv, d] = await Promise.all([
@@ -45,6 +49,22 @@ export default function TenderDetail() {
   };
   useEffect(() => { load(); }, [id]);
 
+  const doArchive = async () => {
+    const reason = prompt('Reason for archiving (optional):') || '';
+    try {
+      await api.post(`/tenders/${id}/archive`, { reason });
+      toast.success('Tender archived');
+      nav('/tenders');
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+  };
+  const doUnarchive = async () => {
+    try {
+      await api.post(`/tenders/${id}/unarchive`);
+      toast.success('Restored');
+      load();
+    } catch (err) { toast.error('Failed'); }
+  };
+
   if (!tender || !pnl) return <div className="p-8 text-slate-500">Loading…</div>;
 
   const changeStatus = async (status) => {
@@ -58,7 +78,10 @@ export default function TenderDetail() {
       <Link to="/tenders" className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1 mb-3"><ArrowLeft className="w-3 h-3" /> Back to Tenders</Link>
       <div className="flex items-start justify-between mb-6">
         <div>
-          <div className="font-mono text-indigo-900 text-sm font-semibold mb-1">{tender.code}</div>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="font-mono text-indigo-900 text-sm font-semibold">{tender.code}</div>
+            {tender.archived && <span className="pill pill-danger">Archived</span>}
+          </div>
           <h1 className="font-display text-2xl font-semibold text-slate-900">{tender.name}</h1>
           <div className="text-sm text-slate-500 mt-1">
             {tender.department} · {tender.tender_no ? `Ref ${tender.tender_no} · ` : ''}Closes {formatDate(tender.closing_date)}
@@ -66,15 +89,43 @@ export default function TenderDetail() {
           </div>
         </div>
         <div className="flex items-start gap-3">
-          {user?.role !== 'viewer' && !tender.contract_no && (
+          {user?.role !== 'viewer' && !tender.contract_no && !tender.archived && (
             <button onClick={() => setShowAOC(true)} data-testid="upload-aoc-btn" className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-3 py-2 rounded-sm flex items-center gap-2"><Sparkles className="w-4 h-4" />Upload AOC</button>
           )}
           <div className="text-right">
             <div className="section-label">Status</div>
-            <select value={tender.status} onChange={(e) => changeStatus(e.target.value)} data-testid="tender-status" className="mt-1 px-3 py-1.5 border border-slate-300 rounded-sm text-sm">
+            <select value={tender.status} onChange={(e) => changeStatus(e.target.value)} data-testid="tender-status" className="mt-1 px-3 py-1.5 border border-slate-300 rounded-sm text-sm" disabled={tender.archived}>
               {masters.statuses.map((s) => <option key={s}>{s}</option>)}
             </select>
           </div>
+          {user?.role !== 'viewer' && (
+            <div className="relative">
+              <button onClick={() => setShowActions(!showActions)} data-testid="tender-actions-menu" className="p-2 border border-slate-300 rounded-sm hover:bg-slate-50 mt-4">
+                <MoreVertical className="w-4 h-4" />
+              </button>
+              {showActions && (
+                <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-slate-200 rounded-sm shadow-lg z-20">
+                  <button onClick={() => { setShowEdit(true); setShowActions(false); }} data-testid="tender-edit-btn" className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+                    <Edit3 className="w-3.5 h-3.5" /> Edit Tender
+                  </button>
+                  {!tender.archived ? (
+                    <button onClick={() => { doArchive(); setShowActions(false); }} data-testid="tender-archive-btn" className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2 text-amber-700">
+                      <Archive className="w-3.5 h-3.5" /> Archive / Cancel
+                    </button>
+                  ) : (
+                    <button onClick={() => { doUnarchive(); setShowActions(false); }} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2 text-emerald-700">
+                      <Archive className="w-3.5 h-3.5" /> Restore
+                    </button>
+                  )}
+                  {user?.role === 'admin' && (
+                    <button onClick={() => { setShowDelete(true); setShowActions(false); }} data-testid="tender-delete-btn" className="w-full text-left px-3 py-2 text-sm hover:bg-red-50 flex items-center gap-2 text-red-700 border-t border-slate-100">
+                      <Trash2 className="w-3.5 h-3.5" /> Delete Tender…
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -181,6 +232,131 @@ export default function TenderDetail() {
       {showInv && <InvoiceModal tenderId={id} department={tender.department} onClose={() => setShowInv(false)} onSaved={() => { setShowInv(false); load(); }} />}
       {showAOC && <AOCModal tenderId={id} onClose={() => setShowAOC(false)} onSaved={() => { setShowAOC(false); load(); }} />}
       {showDocUpload && <DocUploadModal tenderId={id} onClose={() => setShowDocUpload(false)} onSaved={() => { setShowDocUpload(false); load(); }} />}
+      {showEdit && <EditTenderModal tender={tender} statuses={masters.statuses} onClose={() => setShowEdit(false)} onSaved={() => { setShowEdit(false); load(); }} />}
+      {showDelete && <DeleteTenderModal tender={tender} onClose={() => setShowDelete(false)} onDeleted={() => { setShowDelete(false); nav('/tenders'); }} />}
+    </div>
+  );
+}
+
+function EditTenderModal({ tender, statuses, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    tender_no: tender.tender_no || '',
+    department: tender.department || '',
+    name: tender.name || '',
+    tender_date: tender.tender_date || '',
+    closing_date: tender.closing_date || '',
+    tender_value: tender.tender_value || 0,
+    contract_value: tender.contract_value || 0,
+    emd_amount: tender.emd_amount || 0,
+    status: tender.status || 'Identified',
+    contract_no: tender.contract_no || '',
+    contract_date: tender.contract_date || '',
+    delivery_date: tender.delivery_date || '',
+    responsible: tender.responsible || '',
+    notes: tender.notes || '',
+  });
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.patch(`/tenders/${tender.id}`, form);
+      toast.success('Tender updated');
+      onSaved();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+    finally { setBusy(false); }
+  };
+  const upd = (k, v) => setForm({ ...form, [k]: v });
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-900/40 flex items-start justify-center pt-10 px-4 overflow-y-auto">
+      <form onSubmit={submit} className="bg-white w-full max-w-2xl rounded-sm border border-slate-200 shadow-lg mb-10" data-testid="edit-tender-form">
+        <div className="px-6 py-4 border-b border-slate-200 flex justify-between items-center">
+          <h3 className="font-display text-lg font-semibold">Edit Tender — {tender.code}</h3>
+          <button type="button" onClick={onClose}><X className="w-5 h-5 text-slate-400" /></button>
+        </div>
+        <div className="p-6 grid grid-cols-2 gap-4">
+          <L label="Government Tender No."><input value={form.tender_no} onChange={(e) => upd('tender_no', e.target.value)} className={inp} /></L>
+          <L label="Department *"><input required value={form.department} onChange={(e) => upd('department', e.target.value)} className={inp} /></L>
+          <label className="col-span-2 block"><span className="block text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Tender Name *</span>
+            <input required value={form.name} onChange={(e) => upd('name', e.target.value)} className={inp} /></label>
+          <L label="Published Date"><input type="date" value={form.tender_date || ''} onChange={(e) => upd('tender_date', e.target.value)} className={inp} /></L>
+          <L label="Closing Date"><input type="date" value={form.closing_date || ''} onChange={(e) => upd('closing_date', e.target.value)} className={inp} /></L>
+          <L label="Tender Value (₹)"><input type="number" value={form.tender_value} onChange={(e) => upd('tender_value', parseFloat(e.target.value) || 0)} className={inp} /></L>
+          <L label="EMD Amount (₹)"><input type="number" value={form.emd_amount} onChange={(e) => upd('emd_amount', parseFloat(e.target.value) || 0)} className={inp} /></L>
+          <L label="Status"><select value={form.status} onChange={(e) => upd('status', e.target.value)} className={inp}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></L>
+          <L label="Responsible"><input value={form.responsible} onChange={(e) => upd('responsible', e.target.value)} className={inp} /></L>
+          <div className="col-span-2 border-t border-slate-100 pt-3 mt-1"><div className="section-label mb-2">Contract details (if AOC received)</div></div>
+          <L label="Contract / AOC No"><input value={form.contract_no} onChange={(e) => upd('contract_no', e.target.value)} className={inp} /></L>
+          <L label="Contract Date"><input type="date" value={form.contract_date || ''} onChange={(e) => upd('contract_date', e.target.value)} className={inp} /></L>
+          <L label="Contract Value (₹)"><input type="number" value={form.contract_value} onChange={(e) => upd('contract_value', parseFloat(e.target.value) || 0)} className={inp} /></L>
+          <L label="Delivery Date"><input type="date" value={form.delivery_date || ''} onChange={(e) => upd('delivery_date', e.target.value)} className={inp} /></L>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 bg-slate-50">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-sm">Cancel</button>
+          <button type="submit" disabled={busy} data-testid="edit-tender-save" className="px-4 py-2 text-sm bg-[#1E1B4B] hover:bg-[#312e81] text-white rounded-sm">{busy ? 'Saving…' : 'Save changes'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function DeleteTenderModal({ tender, onClose, onDeleted }) {
+  const [refs, setRefs] = useState(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.get(`/tenders/${tender.id}/references`).then((r) => setRefs(r.data));
+  }, [tender.id]);
+
+  const submit = async () => {
+    if (confirmText !== tender.code) { toast.error('Please type the tender code to confirm'); return; }
+    setBusy(true);
+    try {
+      const force = refs && !refs.safe_to_delete;
+      await api.delete(`/tenders/${tender.id}${force ? '?force=true' : ''}`);
+      toast.success('Tender deleted');
+      onDeleted();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-start justify-center pt-16 px-4">
+      <div className="bg-white w-full max-w-lg rounded-sm border border-slate-200 shadow-xl" data-testid="delete-tender-modal">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center gap-2">
+          <Trash2 className="w-5 h-5 text-red-600" />
+          <h3 className="font-display text-lg font-semibold text-red-900">Delete Tender</h3>
+        </div>
+        <div className="p-6">
+          <p className="text-sm text-slate-700 mb-3">You are about to permanently delete <strong>{tender.code}</strong> — <em>{tender.name}</em>.</p>
+          {refs && (
+            refs.safe_to_delete ? (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-sm p-3 text-xs text-emerald-800 mb-4">
+                ✓ This tender has no linked records. Safe to delete.
+              </div>
+            ) : (
+              <div className="bg-red-50 border border-red-200 rounded-sm p-3 text-xs text-red-800 mb-4">
+                <div className="font-semibold mb-1">⚠ This will also delete linked records:</div>
+                <ul className="space-y-0.5 pl-4 list-disc">
+                  {refs.items > 0 && <li>{refs.items} item(s)</li>}
+                  {refs.transactions > 0 && <li>{refs.transactions} transaction(s)</li>}
+                  {refs.invoices > 0 && <li>{refs.invoices} invoice(s) and their receipts</li>}
+                  {refs.ebg > 0 && <li>{refs.ebg} EBG record(s)</li>}
+                  {refs.documents > 0 && <li>{refs.documents} document(s) (files marked deleted)</li>}
+                </ul>
+                <div className="mt-2 font-medium">Financial history will be lost. Consider <strong>Archive</strong> instead.</div>
+              </div>
+            )
+          )}
+          <label className="block text-xs font-medium text-slate-600 mb-1">Type <span className="font-mono text-slate-900">{tender.code}</span> to confirm:</label>
+          <input value={confirmText} onChange={(e) => setConfirmText(e.target.value)} data-testid="delete-tender-confirm" className={inp} placeholder={tender.code} />
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 bg-slate-50">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-sm">Cancel</button>
+          <button onClick={submit} disabled={busy || confirmText !== tender.code} data-testid="delete-tender-final" className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-sm">{busy ? 'Deleting…' : 'Delete permanently'}</button>
+        </div>
+      </div>
     </div>
   );
 }

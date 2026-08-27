@@ -1,0 +1,34 @@
+{
+  "summary": "Backend-only testing of the additive tender CRUD iteration. Created /app/backend/tests/test_tender_crud.py (18 tests) covering PATCH partial update (field preservation + audit), GET /references, DELETE safe/blocked(409)/force-cascade, archive/unarchive + include_archived, and role guards. 17/18 passed. Also re-ran prior suites serially (backend_test.py + test_rejection_exclusion.py = 51 tests) — all 51 passed, no regressions. Verified bcrypt hashes are $2b$ for both seeded users.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/tenders/{id}/unarchive", "issue": "No existence check — returns 200 {ok:true} for a non-existent tender id and still writes an 'unarchive' audit row. Should 404 like /archive does."},
+      {"endpoint": "DELETE /api/tenders/{id} (409 path)", "issue": "409 reference check only counts transactions/invoices/EBGs; a tender with only items or documents is hard-deleted silently even though /references reports safe_to_delete=false. Inconsistent with the references endpoint contract (design decision — confirm intended)."},
+      {"endpoint": "CORS middleware", "issue": "allow_credentials=True combined with default allow_origins='*' is an invalid CORS combo (browsers reject credentialed wildcard). Harmless today because auth uses Bearer/localStorage, but should be explicit origins."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_tender_crud.py",
+    "/app/test_reports/pytest/tender_crud.xml",
+    "/app/test_reports/pytest/regression_iter6.xml"
+  ],
+  "action_items": [
+    "Add 404 guard in POST /api/tenders/{id}/unarchive for unknown tender ids",
+    "Decide/align 409 blocking criteria with /references safe_to_delete (items/documents currently ignored)"
+  ],
+  "critical_code_review_comments": [
+    "delete_tender force-cascade correctly removes items/txns/invoices/receipts/EBGs and soft-deletes files; verified end-to-end. Note that POST /api/receipts auto-creates an income transaction on the tender, so cascade counts are (user txns + receipt txns) — reflect this in UI reference counts so users are not surprised.",
+    "PATCH whitelist correctly ignores code/id; returns 400 'Nothing to update' when payload has only disallowed keys — acceptable but the frontend edit modal should never hit this.",
+    "server.py is 1365 lines — approaching the split threshold; consider extracting tenders/transactions/reports routers."
+  ],
+  "updated_files": ["/app/backend/tests/test_tender_crud.py"],
+  "success_rate": {"backend": "97% (68/69 tests)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Transient TEST_CRUD tenders/items/invoices/receipts/EBGs/transactions created and force-deleted in module teardown; no residual test data.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin office.brightindiatraders@gmail.com / Admin@1234; staff bharath@brightindiatraders.in / Staff@1234 (both work; roles correct)",
+  "context_for_next_testing_agent": "Run backend suites serially: pytest /app/backend/tests -n 0. New file test_tender_crud.py covers tender CRUD. /api/transactions returns {items, count, total_expense, total_income} (not a bare list) — index accordingly. There is no public audit-list endpoint for tenders; the audit test reads the mongo 'audit' collection directly via MONGO_URL/DB_NAME. Only open failure: unarchive of unknown id returns 200 instead of 404. Frontend TenderDetail actions menu was NOT tested (backend-only scope).",
+  "rca_of_the_issue": "unarchive_tender calls db.tenders.update_one without first fetching the tender, so a no-op update returns success; archive_tender does the fetch/404 correctly. Fix: mirror the find_one + HTTPException(404) guard."
+}
