@@ -7,19 +7,29 @@ load_dotenv(ROOT_DIR / '.env')
 import os
 import io
 import csv
+import json
 import uuid
+import tempfile
 import logging
 import bcrypt
 import jwt
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as _date
 from typing import List, Optional, Literal
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, UploadFile, File, Response, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, UploadFile, File, Response, Query, Form
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
+
+# LLM extraction
+try:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+    LLM_AVAILABLE = True
+except Exception as _e:
+    LLM_AVAILABLE = False
+    logging.warning(f"emergentintegrations not available: {_e}")
 
 # ---------- Setup ----------
 mongo_url = os.environ['MONGO_URL']
@@ -208,6 +218,15 @@ class EBGIn(BaseModel):
     expiry_date: str
     reference: Optional[str] = ""
     status: Literal["active", "released", "expired"] = "active"
+    released_date: Optional[str] = None
+
+
+class DocumentLinkIn(BaseModel):
+    file_id: str
+    tender_id: Optional[str] = None
+    txn_id: Optional[str] = None
+    document_type: str  # tender_document, aoc_contract, bill_invoice, payment_proof, emd_proof, ebg, courier_proof, sample_proof, other
+    notes: Optional[str] = ""
 
 
 class InvoiceIn(BaseModel):
@@ -254,6 +273,11 @@ CATEGORIES = {
 }
 
 ACCOUNTS = ["ICICI", "HDFC", "SBI", "Cash", "Dad", "Bharath"]
+
+DOCUMENT_TYPES = [
+    "tender_document", "aoc_contract", "bill_invoice", "payment_proof",
+    "emd_proof", "ebg", "courier_proof", "sample_proof", "other",
+]
 
 # ---------- Utility ----------
 def new_id() -> str:
@@ -313,7 +337,128 @@ async def masters(user: dict = Depends(get_current_user)):
         "statuses": TENDER_STATUSES,
         "categories": CATEGORIES,
         "accounts": ACCOUNTS,
+        "document_types": DOCUMENT_TYPES,
     }
+
+
+# ---------- LLM PDF Extraction ----------
+async def _extract_from_pdf(file: UploadFile, prompt: str, session_id: str) -> dict:
+    if not LLM_AVAILABLE:
+        raise HTTPException(503, "AI extraction not available. Install emergentintegrations.")
+    if not EMERGENT_KEY:
+        raise HTTPException(503, "EMERGENT_LLM_KEY not configured.")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a PDF file.")
+    data = await file.read()
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    try:
+        tmp.write(data); tmp.close()
+        chat = LlmChat(
+            api_key=EMERGENT_KEY,
+            session_id=session_id,
+            system_message=(
+                "You extract structured JSON from Indian government tender / contract PDFs. "
+                "Return ONLY a raw JSON object — no prose, no markdown fences, no commentary. "
+                "Use null for missing text fields and 0 for missing numeric fields. "
+                "Do not invent values not present in the document."
+            ),
+        ).with_model("gemini", "gemini-3.1-pro-preview")
+        pdf_attachment = FileContentWithMimeType(file_path=tmp.name, mime_type="application/pdf")
+        # Non-streaming: use send_message
+        response = await chat.send_message(UserMessage(text=prompt, file_contents=[pdf_attachment]))
+        text = response.strip() if isinstance(response, str) else str(response)
+        # Strip fences if any
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        # Find first JSON object substring
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+        try:
+            return json.loads(text)
+        except Exception as e:
+            logging.error(f"Extraction JSON parse failed: {e}; raw={text[:500]}")
+            raise HTTPException(422, "Could not parse extracted fields. Please try again or fill manually.")
+    finally:
+        try: os.unlink(tmp.name)
+        except Exception: pass
+
+
+@api.post("/extract/tender")
+async def extract_tender(file: UploadFile = File(...), user: dict = Depends(not_viewer)):
+    prompt = (
+        'Extract these fields from this tender document. Return ONLY JSON with these keys and types:\n'
+        '{\n'
+        '  "tender_no": "government tender reference number as printed" or null,\n'
+        '  "name": "tender name / brief description" or null,\n'
+        '  "department": "issuing department, ministry, or organization" or null,\n'
+        '  "tender_date": "YYYY-MM-DD published/publish date" or null,\n'
+        '  "closing_date": "YYYY-MM-DD bid submission end / closing date" or null,\n'
+        '  "tender_value": number (estimated tender value in ₹, digits only),\n'
+        '  "emd_amount": number (EMD / earnest money deposit in ₹, digits only)\n'
+        '}\n'
+        'Do not include any other keys. If a value is missing, use null (or 0 for numbers). Return raw JSON only.'
+    )
+    return await _extract_from_pdf(file, prompt, session_id=f"tender-extract-{new_id()[:8]}")
+
+
+@api.post("/extract/aoc")
+async def extract_aoc(file: UploadFile = File(...), user: dict = Depends(not_viewer)):
+    prompt = (
+        'Extract contract / AOC (Acceptance of Contract) / Purchase Order fields from this document. '
+        'Return ONLY JSON with these keys:\n'
+        '{\n'
+        '  "contract_no": "contract/AOC/PO number" or null,\n'
+        '  "contract_date": "YYYY-MM-DD" or null,\n'
+        '  "contract_value": number (total contract value in ₹, digits only),\n'
+        '  "delivery_date": "YYYY-MM-DD delivery / completion date" or null,\n'
+        '  "items": [\n'
+        '    {"name": "item description", "quantity": number, "unit": "pcs/kg/mtr/etc", "rate": number, "value": number}\n'
+        '  ]\n'
+        '}\n'
+        'items array must contain every line item in the contract with its qty, unit, rate and total value. Return raw JSON only.'
+    )
+    return await _extract_from_pdf(file, prompt, session_id=f"aoc-extract-{new_id()[:8]}")
+
+
+@api.post("/tenders/{tender_id}/apply-aoc")
+async def apply_aoc(tender_id: str, body: dict, user: dict = Depends(not_viewer)):
+    """Apply extracted AOC data to a tender: update contract fields + create items."""
+    tender = await db.tenders.find_one({"id": tender_id})
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+    updates = {}
+    if body.get("contract_no"): updates["contract_no"] = body["contract_no"]
+    if body.get("contract_date"): updates["contract_date"] = body["contract_date"]
+    if body.get("contract_value") is not None:
+        updates["contract_value"] = float(body["contract_value"] or 0)
+        # Also update tender_value if not set
+        if not tender.get("tender_value"):
+            updates["tender_value"] = float(body["contract_value"] or 0)
+    if body.get("delivery_date"): updates["delivery_date"] = body["delivery_date"]
+    updates["status"] = "AOC Received"
+    if updates:
+        await db.tenders.update_one({"id": tender_id}, {"$set": updates})
+    created_items = []
+    for it in (body.get("items") or []):
+        code = await next_item_code(tender["code"])
+        rate = float(it.get("rate") or 0)
+        qty = float(it.get("quantity") or 0)
+        est = float(it.get("value") or (rate * qty))
+        doc = {
+            "id": new_id(), "code": code, "tender_id": tender_id,
+            "name": it.get("name") or "Item",
+            "quantity": qty, "unit": it.get("unit") or "pcs",
+            "rate": rate, "estimated_cost": est,
+            "created_at": now_iso(),
+        }
+        await db.items.insert_one(dict(doc))
+        doc.pop("_id", None)
+        created_items.append(doc)
+    return {"ok": True, "items_added": len(created_items), "items": created_items}
 
 # ---------- Tenders ----------
 @api.get("/tenders")
@@ -445,6 +590,11 @@ async def get_txn(txn_id: str, user: dict = Depends(get_current_user)):
 
 @api.post("/transactions/{txn_id}/approve")
 async def approve_txn(txn_id: str, body: ApprovalAction, user: dict = Depends(require_admin)):
+    existing = await db.transactions.find_one({"id": txn_id})
+    if not existing:
+        raise HTTPException(404, "Transaction not found")
+    if existing.get("created_by") and existing["created_by"].lower() == user["email"].lower():
+        raise HTTPException(403, "Requester cannot approve their own transaction.")
     update = {"approved_by": user["email"], "approved_at": now_iso(), "approval_remarks": body.remarks}
     if body.action == "approve":
         update["approval_status"] = "approved"
@@ -486,8 +636,56 @@ async def create_ebg(payload: EBGIn, user: dict = Depends(not_viewer)):
 
 
 @api.post("/ebg/{ebg_id}/release")
-async def release_ebg(ebg_id: str, user: dict = Depends(not_viewer)):
-    await db.ebg.update_one({"id": ebg_id}, {"$set": {"status": "released"}})
+async def release_ebg(ebg_id: str, body: dict = None, user: dict = Depends(not_viewer)):
+    body = body or {}
+    released_date = body.get("released_date") or _date.today().isoformat()
+    await db.ebg.update_one({"id": ebg_id}, {"$set": {"status": "released", "released_date": released_date}})
+    return {"ok": True}
+
+
+# ---------- Documents (per tender) ----------
+@api.post("/documents")
+async def link_document(payload: DocumentLinkIn, user: dict = Depends(not_viewer)):
+    if payload.document_type not in DOCUMENT_TYPES:
+        raise HTTPException(400, "Invalid document type")
+    if not (payload.tender_id or payload.txn_id):
+        raise HTTPException(400, "Must link to a tender or transaction")
+    doc = {
+        "id": new_id(),
+        "file_id": payload.file_id,
+        "tender_id": payload.tender_id,
+        "txn_id": payload.txn_id,
+        "document_type": payload.document_type,
+        "notes": payload.notes,
+        "linked_by": user["email"],
+        "linked_at": now_iso(),
+    }
+    await db.documents.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/documents")
+async def list_documents(tender_id: Optional[str] = None, txn_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if tender_id: q["tender_id"] = tender_id
+    if txn_id: q["txn_id"] = txn_id
+    docs = await db.documents.find(q, {"_id": 0}).sort("linked_at", -1).to_list(500)
+    # Enrich with file metadata
+    for d in docs:
+        f = await db.files.find_one({"id": d["file_id"], "is_deleted": False}, {"_id": 0})
+        d["file"] = f
+    return [d for d in docs if d.get("file")]
+
+
+@api.delete("/documents/{doc_id}")
+async def unlink_document(doc_id: str, user: dict = Depends(not_viewer)):
+    d = await db.documents.find_one({"id": doc_id})
+    if not d:
+        raise HTTPException(404, "Not found")
+    await db.documents.delete_one({"id": doc_id})
+    # Soft-delete underlying file
+    await db.files.update_one({"id": d["file_id"]}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
 # ---------- Invoices / Receivables ----------
@@ -677,6 +875,33 @@ async def dashboard(user: dict = Depends(get_current_user)):
     active_tenders = await db.tenders.count_documents({"status": {"$in": ["Participating", "L1", "AOC Received", "Execution"]}})
     total_tenders = await db.tenders.count_documents({})
 
+    # Total contract/tender value across active + AOC + execution tenders
+    active_tender_docs = await db.tenders.find(
+        {"status": {"$in": ["L1", "AOC Received", "Execution", "Completed"]}}, {"_id": 0}
+    ).to_list(500)
+    tender_value_total = sum(
+        float(t.get("contract_value") or t.get("tender_value") or 0) for t in active_tender_docs
+    )
+
+    # EBG expiring soon (60/30/7)
+    tenders_by_id = {t["id"]: t for t in await db.tenders.find({}, {"_id": 0}).to_list(1000)}
+    today = _date.today()
+    expiring = []
+    for e in ebg:
+        try:
+            exp = _date.fromisoformat(e["expiry_date"])
+        except Exception:
+            continue
+        days = (exp - today).days
+        if days <= 60:
+            expiring.append({
+                "id": e["id"], "amount": e["amount"], "expiry_date": e["expiry_date"],
+                "days_left": days, "bank": e.get("bank"),
+                "tender_code": tenders_by_id.get(e.get("tender_id"), {}).get("code", "-"),
+                "severity": "critical" if days <= 7 else ("warning" if days <= 30 else "notice"),
+            })
+    expiring.sort(key=lambda x: x["days_left"])
+
     return {
         "revenue": revenue,
         "receivables": total_receivable,
@@ -685,12 +910,15 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "pre_tender_cost": pre_cost,
         "post_tender_cost": post_cost,
         "admin_cost": admin_cost,
+        "total_actual_cost": pre_cost + post_cost,
         "gross_contribution": revenue - pre_cost - post_cost,
         "operating_contribution": revenue - pre_cost - post_cost - admin_cost,
         "ebg_blocked": ebg_blocked,
         "emd_outstanding": emd_outstanding,
         "active_tenders": active_tenders,
         "total_tenders": total_tenders,
+        "tender_value_total": tender_value_total,
+        "ebg_expiring": expiring,
     }
 
 

@@ -15,14 +15,30 @@ export default function EBG() {
   useEffect(() => { load(); api.get('/tenders').then((r) => setTenders(r.data)); }, []);
 
   const release = async (id) => {
-    await api.post(`/ebg/${id}/release`);
+    await api.post(`/ebg/${id}/release`, { released_date: new Date().toISOString().slice(0, 10) });
     toast.success('EBG released');
     load();
   };
 
   const tenderCode = (id) => tenders.find((t) => t.id === id)?.code || '—';
+
+  const daysLeft = (dateStr) => {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / (1000 * 60 * 60 * 24));
+  };
+  const severity = (days) => {
+    if (days == null) return null;
+    if (days <= 7) return { cls: 'pill-danger', label: `${days}d left`, icon: '⚠' };
+    if (days <= 30) return { cls: 'pill-warning', label: `${days}d left`, icon: '⏱' };
+    if (days <= 60) return { cls: 'pill-muted', label: `${days}d left`, icon: '' };
+    return null;
+  };
+
   const active = rows.filter((r) => r.status === 'active');
   const totalBlocked = active.reduce((s, r) => s + r.amount, 0);
+  const expiringCount = active.filter((r) => { const d = daysLeft(r.expiry_date); return d != null && d <= 60; }).length;
 
   return (
     <div className="p-8 max-w-[1400px]">
@@ -37,9 +53,10 @@ export default function EBG() {
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-4 gap-4 mb-6">
         <div className="kpi"><div className="kpi-label">Active EBGs</div><div className="kpi-value">{active.length}</div></div>
         <div className="kpi"><div className="kpi-label">Blocked Amount</div><div className="kpi-value text-indigo-900">{formatINR(totalBlocked)}</div></div>
+        <div className="kpi"><div className="kpi-label">Expiring in 60 Days</div><div className={`kpi-value ${expiringCount > 0 ? 'text-red-700' : ''}`}>{expiringCount}</div></div>
         <div className="kpi"><div className="kpi-label">Released This Year</div><div className="kpi-value text-emerald-700">{rows.filter((r) => r.status === 'released').length}</div></div>
       </div>
 
@@ -50,13 +67,20 @@ export default function EBG() {
             <th className="text-right">Amount</th><th>Status</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.map((r) => (
+            {rows.map((r) => {
+              const days = r.status === 'active' ? daysLeft(r.expiry_date) : null;
+              const sev = severity(days);
+              return (
               <tr key={r.id}>
                 <td className="font-mono text-[12px] text-indigo-900">{tenderCode(r.tender_id)}</td>
                 <td>{r.bank}</td>
                 <td className="font-mono text-xs text-slate-600">{r.reference || '—'}</td>
                 <td>{formatDate(r.issue_date)}</td>
-                <td>{formatDate(r.expiry_date)}</td>
+                <td>
+                  <div>{formatDate(r.expiry_date)}</div>
+                  {sev && <span className={`pill ${sev.cls} mt-0.5 inline-block`}>{sev.icon} {sev.label}</span>}
+                  {r.status === 'released' && r.released_date && <div className="text-[10px] text-emerald-700 mt-0.5">Released {formatDate(r.released_date)}</div>}
+                </td>
                 <td className="num-cell font-semibold">{formatINR(r.amount)}</td>
                 <td><span className={`pill ${r.status === 'active' ? 'pill-warning' : r.status === 'released' ? 'pill-success' : 'pill-danger'}`}>{r.status}</span></td>
                 <td className="text-right">
@@ -65,7 +89,8 @@ export default function EBG() {
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {rows.length === 0 && <tr><td colSpan={8} className="text-center py-10 text-slate-400 text-sm">No EBGs recorded.</td></tr>}
           </tbody>
         </table>
