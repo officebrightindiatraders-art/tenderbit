@@ -12,6 +12,7 @@ import BankRecon from '@/pages/BankRecon';
 import EBG from '@/pages/EBG';
 import Receivables from '@/pages/Receivables';
 import Payables from '@/pages/Payables';
+import PersonalPayments from '@/pages/PersonalPayments';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -38,6 +39,7 @@ function App() {
               <Route path="ebg" element={<EBG />} />
               <Route path="receivables" element={<Receivables />} />
               <Route path="payables" element={<Payables />} />
+              <Route path="personal" element={<PersonalPayments />} />
             </Route>
           </Routes>
         </BrowserRouter>
