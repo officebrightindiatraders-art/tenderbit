@@ -4,7 +4,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { formatINR, formatDate, todayISO } from '@/lib/format';
 import { toast } from 'sonner';
-import { Plus, X, Upload, Filter, RotateCcw, FileText as FileIcon, ExternalLink } from 'lucide-react';
+import { Plus, X, Upload, Filter, RotateCcw, FileText as FileIcon, ExternalLink, Sparkles, Bookmark, Save } from 'lucide-react';
 
 const statusPill = (s) => ({
   requested: 'pill-warning', approved: 'pill-primary', paid: 'pill-success',
@@ -102,11 +102,12 @@ export default function Transactions() {
           {activeFilterCount > 0 && (
             <>
               <span className="pill pill-primary">{activeFilterCount} active</span>
-              <button onClick={clearAll} className="text-xs text-slate-500 hover:text-red-600 flex items-center gap-1 ml-auto">
+              <button onClick={clearAll} className="text-xs text-slate-500 hover:text-red-600 flex items-center gap-1">
                 <RotateCcw className="w-3 h-3" /> Clear all
               </button>
             </>
           )}
+          <SavedViews activeFilterCount={activeFilterCount} params={params} setParams={setParams} />
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 items-end">
@@ -241,6 +242,32 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
     finally { setUploading(false); }
   };
 
+  const extractFromBill = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setUploading(true);
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      // First extract fields
+      const { data: ex } = await api.post('/extract/bill', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      // Then upload the bill as proof
+      const fd2 = new FormData(); fd2.append('file', file);
+      const { data: up } = await api.post('/files/upload', fd2, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setForm((f) => ({
+        ...f,
+        vendor: ex.vendor || f.vendor,
+        amount: Number(ex.amount) || f.amount,
+        invoice_no: ex.invoice_no || f.invoice_no,
+        invoice_date: ex.invoice_date || f.invoice_date,
+        description: ex.description || f.description,
+        category: (categoryList.includes(ex.category_hint) ? ex.category_hint : f.category),
+        document_id: up.id,
+      }));
+      setUploadedName(file.name);
+      toast.success(`Extracted: ${ex.vendor || 'vendor'} · ₹${ex.amount || 0}`);
+    } catch (err) { toast.error(err.response?.data?.detail || 'Extraction failed'); }
+    finally { setUploading(false); }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.category) { toast.error('Choose a category'); return; }
@@ -342,10 +369,16 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
                 </select>
               </L>
               <L label="Bill / Receipt">
-                <label className="cursor-pointer flex items-center gap-1.5 px-3 py-2 border border-dashed border-slate-300 rounded-sm text-xs text-slate-600 hover:bg-slate-50">
-                  <Upload className="w-3.5 h-3.5" /> {uploading ? 'Uploading…' : (uploadedName || 'Upload proof')}
-                  <input type="file" hidden onChange={handleUpload} data-testid="tx-file" />
-                </label>
+                <div className="flex gap-1.5">
+                  <label className="cursor-pointer flex-1 flex items-center gap-1.5 px-3 py-2 border border-dashed border-slate-300 rounded-sm text-xs text-slate-600 hover:bg-slate-50">
+                    <Upload className="w-3.5 h-3.5" /> {uploading ? 'Working…' : (uploadedName || 'Upload proof')}
+                    <input type="file" hidden onChange={handleUpload} data-testid="tx-file" />
+                  </label>
+                  <label data-testid="tx-ai-bill" className="cursor-pointer flex items-center gap-1 px-2 py-2 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 rounded-sm text-xs text-emerald-800 font-medium" title="Upload a bill and AI will auto-fill vendor, amount, category">
+                    <Sparkles className="w-3.5 h-3.5" /> AI
+                    <input type="file" accept="application/pdf,image/*" hidden onChange={extractFromBill} />
+                  </label>
+                </div>
               </L>
               <label className="col-span-3 block">
                 <span className="block text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Description</span>
@@ -536,4 +569,54 @@ function KV({ label, v, mono, num, full }) {
 
 function L({ label, children }) {
   return <label className="block"><span className="block text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1">{label}</span>{children}</label>;
+}
+
+// ---------- Saved Views (localStorage) ----------
+function SavedViews({ activeFilterCount, params, setParams }) {
+  const [views, setViews] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('bit_saved_views') || '[]'); } catch { return []; }
+  });
+  const [showSave, setShowSave] = useState(false);
+  const [name, setName] = useState('');
+
+  const persist = (v) => { setViews(v); localStorage.setItem('bit_saved_views', JSON.stringify(v)); };
+  const save = () => {
+    if (!name.trim()) { toast.error('Give it a name'); return; }
+    const query = params.toString();
+    const next = [...views.filter((x) => x.name !== name), { name: name.trim(), query }];
+    persist(next); setShowSave(false); setName(''); toast.success('View saved');
+  };
+  const load = (v) => setParams(new URLSearchParams(v.query), { replace: true });
+  const del = (n) => persist(views.filter((v) => v.name !== n));
+
+  return (
+    <div className="ml-auto flex items-center gap-2">
+      {views.length > 0 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          <Bookmark className="w-3 h-3 text-slate-400" />
+          {views.map((v) => (
+            <div key={v.name} className="flex items-center bg-indigo-50 border border-indigo-200 rounded-sm">
+              <button onClick={() => load(v)} data-testid={`view-${v.name}`} className="px-2 py-0.5 text-xs text-indigo-800 hover:bg-indigo-100">{v.name}</button>
+              <button onClick={() => del(v.name)} className="px-1 text-slate-400 hover:text-red-600 text-xs">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {activeFilterCount > 0 && (
+        showSave ? (
+          <div className="flex items-center gap-1">
+            <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="View name…"
+              onKeyDown={(e) => e.key === 'Enter' && save()}
+              className="px-2 py-1 text-xs border border-slate-300 rounded-sm w-32" data-testid="save-view-name" />
+            <button onClick={save} data-testid="save-view-confirm" className="px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm">Save</button>
+            <button onClick={() => setShowSave(false)} className="text-xs text-slate-500 px-1">Cancel</button>
+          </div>
+        ) : (
+          <button onClick={() => setShowSave(true)} data-testid="save-view-btn" className="text-xs text-indigo-700 hover:text-indigo-900 flex items-center gap-1">
+            <Save className="w-3 h-3" /> Save this view
+          </button>
+        )
+      )}
+    </div>
+  );
 }

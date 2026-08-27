@@ -1,0 +1,42 @@
+{
+  "summary": "Full backend + frontend verification of iteration-3 changes (self-approve unblocked, /admin/reset fresh slate, Reports CSV/print, Saved Views, AI bill button). Created /app/backend/tests/backend_test.py (33 pytest cases) — all 33 pass. Playwright e2e on the public preview URL: admin login -> empty-state dashboard (all KPIs zero, 0 tenders) -> created tender via Manual Entry -> created 5000 EMD pre-tender 'requested' txn -> Approvals showed the owner's own row WITH Approve/Reject/Query, Approve returned success (no 403) and the row disappeared after reload -> detail modal Approval tab shows approver email, History tab shows 'approval:approve (self)' with note 'self-approved:' -> Reports page renders KPIs/By-Category/table, filters reactive, 'Download CSV' opens the /api/reports/transactions.csv?...&auth=<jwt> URL which returns 200 text/csv with attachment header and 1 data row, 'Print / Save as PDF' calls window.print -> Saved Views: pill saved to localStorage, filters cleared, pill click restored stage=pre_tender&period=last_30 and persists across reload -> AI bill button (green, sparkles, data-testid=tx-ai-bill) present and visible (extraction not invoked, per instructions). No console/page errors on Dashboard, Tenders, Transactions, Approvals, Bank, EBG, Money In, Money Out, Personal Payments, Reports. DB was re-reset at the end, so it is empty again.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/reports/transactions.csv", "issue": "Accepts the raw JWT in the ?auth= query string. Works, but the token is exposed in browser history, referrers and ingress access logs. Consider a short-lived one-time export token instead."},
+      {"endpoint": "POST /api/auth/login", "issue": "No brute-force protection / lockout — unlimited password attempts return 401 with no throttling or failed-attempt counter."},
+      {"endpoint": "app CORS", "issue": "CORSMiddleware uses allow_credentials=True with CORS_ORIGINS=\"*\"; the wildcard+credentials combination is rejected by browsers. Harmless today (Bearer tokens, no cookies) but should be an explicit origin list."},
+      {"endpoint": "POST /api/admin/reset", "issue": "Destructive, irreversible and unguarded (no confirmation token/body). Admin-only is enforced (staff gets 403), but a single accidental POST wipes tenders/txns/files/audit including the audit trail itself."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TxnForm AI bill extract", "issue": "data-testid=tx-ai-bill is on the hidden <input type=file>, not on the visible green 'AI' label/button. The control works (click on label opens picker) but tests/automation cannot click the testid element directly.", "selector": "[data-testid=\"tx-ai-bill\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Reports (/reports)", "issues": ["Date Range defaults to 'Last 30 days', so older transactions silently don't appear (and CSV export inherits the same window) — an 'All time' default or a visible 'showing last 30 days' hint would avoid perceived data loss."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/iter3_results.xml"],
+  "action_items": [
+    "Optional: move data-testid=tx-ai-bill onto the visible AI label (keep one on the input if needed).",
+    "Optional: guard POST /api/admin/reset with an explicit confirm payload (e.g. {\"confirm\": \"RESET\"}) and keep the audit collection.",
+    "Optional: replace ?auth=<jwt> CSV export with a short-lived export token; set explicit CORS_ORIGINS."
+  ],
+  "critical_code_review_comments": [
+    "approve_txn correctly records self_approved=True and audits 'approval:approve (self)'; verified end-to-end. It does not block re-approval of an already approved/rejected txn — any admin can flip approval_status repeatedly; consider rejecting when approval_status is already terminal.",
+    "Approvals.jsx load() still has no try/catch or loading state — a failed /transactions or /tenders call renders an empty queue with no error feedback (carried over from iteration 2).",
+    "/reports/transactions.csv duplicates the whole filter-to-Mongo query block from list_txns (~25 lines) — extract a shared _build_txn_query() helper (DRY).",
+    "Transactions.jsx is 622 lines and holds list, filters, SavedViews, TxnForm and detail modal — split into components/ for maintainability.",
+    "server.py is 1280 lines — split into routers (auth, tenders, txns, reports, admin)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (33/33 pytest)", "frontend": "100% of listed flows"},
+  "seed_data_creation": "Created TEST tenders (BIT-2026-001/002) and TXN-000001 during backend+UI flows; POST /api/admin/reset was called again at the end, so the DB is empty (users preserved). Browser localStorage of the test session holds a 'Recent Pre-Tender' saved view — not visible to the real user.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin office.brightindiatraders@gmail.com / Admin@1234 (works, bcrypt $2b$12$); staff bharath@brightindiatraders.in / Staff@1234 (works, correctly gets 403 on approve and on /admin/reset)",
+  "context_for_next_testing_agent": "Run backend suite serially: `cd /app/backend && python -m pytest tests/backend_test.py -n 0` (pytest.ini forces -n 2 --dist loadscope which breaks the session-shared `created` fixture ordering; the suite also calls POST /api/admin/reset in TestFreshSlate, so it wipes data — never run it against data you need). Transaction dates must be today's date, otherwise the default period=last_30 filters them out (server date is Aug 2026). All iteration-3 features verified working; DB left empty.",
+  "rca_of_the_issue": "Reported 403 on self-approve is gone: approve_txn no longer raises for created_by == approver; it sets self_approved=True and audits 'approval:approve (self)'. Verified via API (assertions on approval_status/payment_status/approved_by/self_approved and audit history) and via UI (Approve button visible for owner-created row, success toast, row removed from pending queue after reload)."
+}

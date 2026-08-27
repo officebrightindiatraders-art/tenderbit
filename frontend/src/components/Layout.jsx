@@ -6,6 +6,7 @@ import { formatDate } from '@/lib/format';
 import {
   LayoutDashboard, FileText, Receipt, CheckSquare, Landmark, ShieldCheck,
   ArrowDownToLine, ArrowUpFromLine, LogOut, Building2, Wallet, Search, Bell, X,
+  BarChart3, Settings, Trash2,
 } from 'lucide-react';
 
 const nav = [
@@ -18,6 +19,7 @@ const nav = [
   { to: '/receivables', label: 'Money In', icon: ArrowDownToLine },
   { to: '/payables', label: 'Money Out', icon: ArrowUpFromLine },
   { to: '/personal', label: 'Personal Payments', icon: Wallet },
+  { to: '/reports', label: 'Reports', icon: BarChart3 },
 ];
 
 export default function Layout() {
@@ -75,7 +77,8 @@ export default function Layout() {
 function buildCrumbs(pathname) {
   const parts = pathname.split('/').filter(Boolean);
   const map = { tenders: 'Tenders', transactions: 'Transactions', approvals: 'Approvals',
-    bank: 'Bank', ebg: 'EBG / EMD', receivables: 'Money In', payables: 'Money Out', personal: 'Personal Payments' };
+    bank: 'Bank', ebg: 'EBG / EMD', receivables: 'Money In', payables: 'Money Out',
+    personal: 'Personal Payments', reports: 'Reports' };
   const out = [{ to: '/', label: 'Dashboard' }];
   let acc = '';
   for (const p of parts) { acc += '/' + p; out.push({ to: acc, label: map[p] || p }); }

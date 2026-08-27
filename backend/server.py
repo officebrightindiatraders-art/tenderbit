@@ -461,6 +461,54 @@ async def extract_aoc(file: UploadFile = File(...), user: dict = Depends(not_vie
     )
     return await _extract_from_pdf(file, prompt, session_id=f"aoc-extract-{new_id()[:8]}")
 
+
+@api.post("/extract/bill")
+async def extract_bill(file: UploadFile = File(...), user: dict = Depends(not_viewer)):
+    """AI-extract vendor, amount, invoice no, date, category hint from a supplier bill (PDF or image)."""
+    if not LLM_AVAILABLE: raise HTTPException(503, "AI extraction not available")
+    if not EMERGENT_KEY: raise HTTPException(503, "EMERGENT_LLM_KEY not configured")
+    name = (file.filename or "").lower()
+    is_pdf = name.endswith(".pdf")
+    is_img = any(name.endswith(x) for x in (".png", ".jpg", ".jpeg", ".webp"))
+    if not (is_pdf or is_img): raise HTTPException(400, "Upload a PDF or image")
+    ext = name.rsplit(".", 1)[-1]
+    mime = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}[ext]
+    data = await file.read()
+    tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
+    try:
+        tmp.write(data); tmp.close()
+        prompt = (
+            'Extract the following fields from this supplier bill / invoice / receipt. '
+            'Return ONLY a raw JSON object:\n'
+            '{"vendor":"supplier / party name or null",'
+            ' "invoice_no":"bill or invoice number or null",'
+            ' "invoice_date":"YYYY-MM-DD or null",'
+            ' "amount":number (final total payable in ₹, digits only, no commas or currency),'
+            ' "gst":number (GST amount if separately shown, else 0),'
+            ' "category_hint":"one of: Yarn, Fabric, Weaving, Stitching, Packing, Transport, '
+            'Courier, Sample, Purchase, Job Work, EMD, Stamp Paper, Tender Filing, Salary, '
+            'Tender Software, One-Time Expense, Miscellaneous — best-fit or null",'
+            ' "description":"1-line summary of what was billed or null"}'
+        )
+        chat = LlmChat(api_key=EMERGENT_KEY, session_id=f"bill-{new_id()[:8]}",
+            system_message="You extract structured JSON from Indian supplier bills. Return raw JSON only. Use null / 0 for missing values.",
+        ).with_model("gemini", "gemini-3.1-pro-preview")
+        att = FileContentWithMimeType(file_path=tmp.name, mime_type=mime)
+        text = await chat.send_message(UserMessage(text=prompt, file_contents=[att]))
+        text = text.strip() if isinstance(text, str) else str(text)
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"): text = text[4:].strip()
+        s, e = text.find("{"), text.rfind("}")
+        if s >= 0 and e > s: text = text[s:e+1]
+        try: return json.loads(text)
+        except Exception as ex:
+            logging.error(f"bill parse fail: {ex}; raw={text[:400]}")
+            raise HTTPException(422, "Could not parse bill fields")
+    finally:
+        try: os.unlink(tmp.name)
+        except Exception: pass
+
 @api.post("/tenders/{tender_id}/apply-aoc")
 async def apply_aoc(tender_id: str, body: dict, user: dict = Depends(not_viewer)):
     tender = await db.tenders.find_one({"id": tender_id})
@@ -663,8 +711,7 @@ async def get_txn_details(txn_id: str, user: dict = Depends(get_current_user)):
 async def approve_txn(txn_id: str, body: ApprovalAction, user: dict = Depends(require_admin)):
     existing = await db.transactions.find_one({"id": txn_id})
     if not existing: raise HTTPException(404, "Not found")
-    if existing.get("created_by") and existing["created_by"].lower() == user["email"].lower():
-        raise HTTPException(403, "Requester cannot approve their own transaction.")
+    self_approve = (existing.get("created_by") or "").lower() == user["email"].lower()
     update = {"approved_by": user["email"], "approved_at": now_iso(), "approval_remarks": body.remarks}
     if body.action == "approve":
         update["approval_status"] = "approved"; update["payment_status"] = "approved"
@@ -672,8 +719,11 @@ async def approve_txn(txn_id: str, body: ApprovalAction, user: dict = Depends(re
         update["approval_status"] = "rejected"; update["payment_status"] = "rejected"
     else:
         update["approval_status"] = "clarification"
+    if self_approve:
+        update["self_approved"] = True
     await db.transactions.update_one({"id": txn_id}, {"$set": update})
-    await audit_write("transaction", txn_id, f"approval:{body.action}", user["email"], after=update, note=body.remarks or "")
+    audit_note = f"self-approved: {body.remarks or ''}" if self_approve else (body.remarks or "")
+    await audit_write("transaction", txn_id, f"approval:{body.action}{' (self)' if self_approve else ''}", user["email"], after=update, note=audit_note)
     # Notify requester
     requester_email = existing.get("created_by")
     if requester_email:
@@ -1104,6 +1154,97 @@ async def personal_payments(user: dict = Depends(get_current_user)):
         t["tender_code"] = tenders.get(t.get("tender_id"), {}).get("code", t.get("tender_id") or "-")
         by_person[p]["transactions"].append(t)
     return by_person
+
+# ---------- Admin / Reset ----------
+@api.post("/admin/reset")
+async def reset_data(body: dict, user: dict = Depends(require_admin)):
+    """Wipe all business data but keep user accounts. Requires {"confirm":"RESET"}."""
+    if (body or {}).get("confirm") != "RESET":
+        raise HTTPException(400, "Please confirm with {\"confirm\": \"RESET\"}")
+    for coll in ["tenders", "items", "transactions", "invoices", "receipts",
+                 "ebg", "bank_txns", "documents", "files", "notifications",
+                 "counters", "vendors"]:
+        await db[coll].delete_many({})
+    await audit_write("system", "reset", "reset", user["email"], note="All business data cleared")
+    return {"ok": True, "cleared": True}
+
+
+@api.get("/admin/email-status")
+async def email_status(user: dict = Depends(require_admin)):
+    """Report whether the outbound email integration is configured."""
+    return {
+        "configured": bool(EMAIL_KEY),
+        "from_name": EMAIL_FROM_NAME,
+        "reply_to": EMAIL_REPLY_TO,
+        "instructions": ("Add EMERGENT_EMAIL_KEY to /app/backend/.env "
+                         "(provisioned by the platform) then restart backend."),
+    }
+
+
+# ---------- Reports export ----------
+@api.get("/reports/transactions.csv")
+async def transactions_csv(
+    tender_id: Optional[str] = None, item_id: Optional[str] = None,
+    stage: Optional[str] = None, payment_status: Optional[str] = None,
+    category: Optional[str] = None, paid_by: Optional[str] = None,
+    account: Optional[str] = None, txn_type: Optional[str] = None,
+    period: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    missing_proof: Optional[bool] = None, q: Optional[str] = None,
+    authorization: Optional[str] = Header(None), auth: Optional[str] = Query(None),
+):
+    # Auth via header OR query for direct link download
+    header = authorization or (f"Bearer {auth}" if auth else None)
+    if not header: raise HTTPException(401, "Not authenticated")
+    try: jwt.decode(header[7:], JWT_SECRET, algorithms=[JWT_ALGO])
+    except Exception: raise HTTPException(401, "Invalid token")
+
+    query = {}
+    if tender_id: query["tender_id"] = tender_id
+    if item_id: query["item_id"] = item_id
+    if stage: query["stage"] = stage
+    if payment_status: query["payment_status"] = payment_status
+    if category: query["category"] = category
+    if paid_by: query["paid_by"] = paid_by
+    if account: query["account"] = account
+    if txn_type: query["txn_type"] = txn_type
+    if missing_proof: query["document_id"] = None
+    df = _txn_date_filter(period)
+    if df: query.update(df)
+    elif date_from or date_to:
+        r = {}
+        if date_from: r["$gte"] = date_from
+        if date_to: r["$lte"] = date_to
+        query["date"] = r
+    if q:
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"code": rx}, {"vendor": rx}, {"description": rx}, {"invoice_no": rx}, {"category": rx}]
+
+    txns = await db.transactions.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
+    tenders_by_id = {t["id"]: t for t in await db.tenders.find({}, {"_id": 0}).to_list(2000)}
+    items_by_id = {i["id"]: i for i in await db.items.find({}, {"_id": 0}).to_list(2000)}
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Transaction ID", "Date", "Type", "Tender", "Item", "Stage", "Category",
+                "Vendor", "Description", "Amount (INR)", "Paid By", "Account",
+                "Payment Status", "Approval Status", "Approved By", "Payment Date",
+                "Bank Reference", "Reconciled", "Created By", "Created At"])
+    for t in txns:
+        tender_code = tenders_by_id.get(t.get("tender_id"), {}).get("code") if t.get("tender_id") else (t.get("tender_id") or "")
+        item_code = items_by_id.get(t.get("item_id"), {}).get("code", "") if t.get("item_id") else ""
+        w.writerow([
+            t.get("code", ""), t.get("date", ""), t.get("txn_type", ""),
+            tender_code or "", item_code, t.get("stage", ""), t.get("category", ""),
+            t.get("vendor", ""), t.get("description", ""), t.get("amount", 0),
+            t.get("paid_by", ""), t.get("account", ""),
+            t.get("payment_status", ""), t.get("approval_status", ""),
+            t.get("approved_by", ""), t.get("payment_date", ""),
+            t.get("bank_reference", ""), "Yes" if t.get("reconciled") else "No",
+            t.get("created_by", ""), t.get("created_at", ""),
+        ])
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="transactions-{_date.today().isoformat()}.csv"'})
+
 
 # ---------- Seed ----------
 async def seed():
