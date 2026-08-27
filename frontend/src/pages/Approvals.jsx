@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { Check, X, MessageSquareWarning } from 'lucide-react';
 
 export default function Approvals() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [txns, setTxns] = useState([]);
   const [tenders, setTenders] = useState([]);
 
@@ -15,7 +15,7 @@ export default function Approvals() {
       api.get('/transactions?payment_status=requested'),
       api.get('/tenders'),
     ]);
-    setTxns(t.data); setTenders(td.data);
+    setTxns(t.data.items || []); setTenders(td.data);
   };
   useEffect(() => { load(); }, []);
 
@@ -53,11 +53,15 @@ export default function Approvals() {
                 <td className="num-cell font-semibold">{formatINR(t.amount)}</td>
                 <td className="text-right">
                   {isAdmin ? (
-                    <div className="flex justify-end gap-1.5">
-                      <button data-testid={`approve-${t.code}`} onClick={() => act(t.id, 'approve')} className="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm flex items-center gap-1"><Check className="w-3 h-3" />Approve</button>
-                      <button data-testid={`reject-${t.code}`} onClick={() => act(t.id, 'reject')} className="px-2.5 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded-sm flex items-center gap-1"><X className="w-3 h-3" />Reject</button>
-                      <button onClick={() => act(t.id, 'send_back')} className="px-2.5 py-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-sm flex items-center gap-1"><MessageSquareWarning className="w-3 h-3" />Query</button>
-                    </div>
+                    (t.created_by || '').toLowerCase() === (user?.email || '').toLowerCase() ? (
+                      <span className="text-xs text-slate-400 italic" title="You cannot approve your own transaction">Awaiting other approver</span>
+                    ) : (
+                      <div className="flex justify-end gap-1.5">
+                        <button data-testid={`approve-${t.code}`} onClick={() => act(t.id, 'approve')} className="px-2.5 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm flex items-center gap-1"><Check className="w-3 h-3" />Approve</button>
+                        <button data-testid={`reject-${t.code}`} onClick={() => act(t.id, 'reject')} className="px-2.5 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded-sm flex items-center gap-1"><X className="w-3 h-3" />Reject</button>
+                        <button onClick={() => act(t.id, 'send_back')} className="px-2.5 py-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-sm flex items-center gap-1"><MessageSquareWarning className="w-3 h-3" />Query</button>
+                      </div>
+                    )
                   ) : (<span className="text-xs text-slate-400">Admin only</span>)}
                 </td>
               </tr>

@@ -21,7 +21,7 @@ export default function BankRecon() {
       api.get('/transactions'),
       api.get('/tenders'),
     ]);
-    setBankTxns(b.data); setLedger(l.data.filter((t) => !t.reconciled && t.payment_status === 'paid')); setTenders(td.data);
+    setBankTxns(b.data); setLedger((l.data.items || []).filter((t) => !t.reconciled && t.payment_status === 'paid')); setTenders(td.data);
   };
   useEffect(() => { load(); }, []);
 
