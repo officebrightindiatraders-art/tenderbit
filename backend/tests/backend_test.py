@@ -110,11 +110,11 @@ class TestAuth:
 # ---------------- Fresh slate / admin reset ----------------
 class TestFreshSlate:
     def test_staff_cannot_reset(self, session, SH):
-        r = session.post(f"{API}/admin/reset", headers=SH, timeout=60)
+        r = session.post(f"{API}/admin/reset", headers=SH, json={"confirm": "RESET"}, timeout=60)
         assert r.status_code == 403
 
     def test_admin_reset_and_empty_state(self, session, AH):
-        r = session.post(f"{API}/admin/reset", headers=AH, timeout=90)
+        r = session.post(f"{API}/admin/reset", headers=AH, json={"confirm": "RESET"}, timeout=90)
         assert r.status_code == 200, r.text[:300]
         assert r.json().get("ok") is True
 

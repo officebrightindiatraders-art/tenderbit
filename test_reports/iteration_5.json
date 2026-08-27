@@ -1,0 +1,40 @@
+{
+  "summary": "Backend-only retest of the iteration-5 reversal double-exclusion fix. Verified server.py now skips contra rows (reverses_txn_id) in dashboard is_valid_cost(), tender_pnl.cat_group(), item_cost and action_required.missing_proof. Ran both suites serially (-n 0): 50 passed / 1 failed out of 51 (all 49 pre-existing tests now PASS, including the 3 that failed in iteration 4). REGRESSION IS FIXED: post_tender_cost 50000 -> reverse -> 0 -> add Rs.7,000 -> 7000 (previously -50000 / -43000); tender-pnl post_total=0 and total_cost/pre_total=7000 after the reverse. Original rejection bug still fixed (all pre_tender_cost/total_actual_cost/gross_contribution/emd_outstanding/pending_approvals and tender-pnl pre_total/total_cost/contribution = 0 after admin rejects the staff-created Rs.12,84,394 EMD). Added 2 new tests (test_16 missing_proof, test_17 personal reimbursement). missing_proof now correctly ignores both the reversed original and the contra row. NEW residual bug found in the same double-exclusion family: personal reimbursement rollups still net to -amount after a reversal, and /api/reports/personal-payments additionally includes REJECTED transactions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/reports/dashboard (personal_reimbursement)",
+        "issue": "server.py L1042 excludes is_reversed but NOT reverses_txn_id, so a reversed pair leaves personal_reimbursement = -amount. Reproduced: paid Rs.5,000 with paid_by='Dad' -> {'Dad': 5000} (correct) -> POST /transactions/{id}/reverse -> {'Dad': -5000} (expected 0). Fix: add `and not t.get('reverses_txn_id')` to the same condition."
+      },
+      {
+        "endpoint": "GET /api/reports/personal-payments",
+        "issue": "Two gaps: (1) L1164 only skips is_reversed, so the contra row (-amount, same paid_by) is still summed -> total goes negative after a reversal; (2) it does not exclude payment_status/approval_status == 'rejected' at all. Reproduced: after the admin-rejected Rs.12,84,394 EMD (paid_by Dad) plus a reversed Rs.5,000 Dad payment, Dad total = 1279394 instead of 0. This is the same class of bug as the originally reported one, just on a different report endpoint."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_rejection_exclusion.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Add `not t.get('reverses_txn_id')` to the personal_reimbursement loop in dashboard() (server.py ~L1042).",
+    "In /reports/personal-payments (server.py ~L1156-1169) skip rows where payment_status=='rejected' or approval_status=='rejected', and skip reverses_txn_id rows.",
+    "Extract a single module-level `is_valid_cost(t)` helper and reuse it in dashboard(), tender_pnl(), item_cost, personal_reimbursement and personal-payments — the repeated inline predicates are exactly why these two endpoints were missed twice."
+  ],
+  "critical_code_review_comments": [
+    "reverse_txn() clones the entire source document (rev = dict(existing)) including document_id/paid_by/item_id, so every aggregation must explicitly filter reverses_txn_id; consider storing contra rows in a distinct collection or with txn_type='reversal' instead.",
+    "/app/backend/server.py is 1296 lines — split into routers (auth, transactions, reports, admin).",
+    "dashboard() pulls up to 5000 transactions and aggregates in Python on every request; move to a Mongo aggregation pipeline."
+  ],
+  "updated_files": ["/app/backend/tests/test_rejection_exclusion.py"],
+  "success_rate": {"backend": "98% (50/51 serial)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "DB reset via POST /api/admin/reset {\"confirm\":\"RESET\"} at suite start and end; TEST_REJ_001 tender + TEST_ prefixed transactions. DB is left empty by test_99_cleanup.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Admin office.brightindiatraders@gmail.com / Admin@1234; Staff bharath@brightindiatraders.in / Staff@1234 (both valid)",
+  "context_for_next_testing_agent": "ALWAYS run pytest with -n 0 (serial) — both suites call POST /api/admin/reset and destroy each other's data under the default -n 2. test_rejection_exclusion.py now has 18 tests; only test_17 (personal reimbursement / personal-payments reversal+rejection exclusion) fails. Reversal and rejection exclusion for dashboard costs, tender-pnl, item cost, payables and missing_proof are fully green. Frontend never exercised in iterations 4-5.",
+  "rca_of_the_issue": "Iteration 4's regression came from applying both exclusion mechanisms to a reversal (flagging the original AND summing the -amount contra). Iteration 5 fixes it by skipping rows carrying reverses_txn_id in every cost aggregation, so a reversed pair contributes exactly 0. Verified. The same predicate is still missing in the two personal-payment rollups, which is why they now show -amount (and, for /reports/personal-payments, still include rejected rows)."
+}

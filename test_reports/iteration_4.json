@@ -1,0 +1,55 @@
+{
+  "summary": "Backend-only retest of the 'rejected transaction still counted in totals' fix. Created a new dedicated suite /app/backend/tests/test_rejection_exclusion.py (16 tests) covering: admin reset -> tender -> STAFF-created pre_tender EMD Rs.12,84,394 (requested) -> ADMIN reject -> dashboard/tender-pnl/payables assertions; reversal exclusion; and non-rejected regression. Also re-ran the existing iteration-3 suite. Serial run (-n 0): 46 passed / 3 failed (49 total). THE REPORTED BUG IS FIXED: rejected txns are fully excluded from pre_tender_cost, post_tender_cost, admin_cost, total_actual_cost, emd_outstanding, gross_contribution, operating_contribution, payables, pending_approvals, /reports/payables and tender-pnl (pre_total/post_total/total_cost/contribution/margin), while still appearing in the transactions list and /details with payment_status='rejected'. NEW BUG FOUND: the REVERSAL path now double-counts the reversal - totals go NEGATIVE instead of 0.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/reports/dashboard and GET /api/reports/tender-pnl/{id}",
+        "issue": "Reversed transactions are DOUBLE-excluded, producing negative totals. POST /api/transactions/{id}/reverse (server.py ~L770-791) inserts a contra transaction with amount = -abs(original) and is_reversed=False/payment_status='paid', and flags the original with is_reversed=True. is_valid_cost() now drops the original, but the negative contra entry is still summed. Reproduced: create post_tender expense Rs.50,000 (paid) -> post_tender_cost = 50000 (correct) -> reverse it -> post_tender_cost = -50000 and tender-pnl post_total = -50000 (expected 0). This also poisons every subsequent figure: after adding a valid Rs.7,000 txn, total_actual_cost showed -43000 instead of 7000 and gross_contribution/contribution were wrong by the same amount.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/admin/reset",
+        "issue": "Now requires body {\"confirm\":\"RESET\"} and returns 422 without it (previously accepted an empty body). Breaking contract change - the iteration-3 test had to be updated. Verify the frontend reset button sends the confirm payload."
+      },
+      {
+        "endpoint": "GET /api/reports/dashboard (action_required.missing_proof)",
+        "issue": "missing_proof counts txns with payment_status in ('paid','approved') without excluding is_reversed/reverses_txn_id, so each reversal contra entry adds a false 'missing proof' action item."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rejection_exclusion.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix reversal aggregation: either (a) also exclude the contra entry from cost sums (e.g. add `not t.get('reverses_txn_id')` to is_valid_cost / cat_group / item_cost), or (b) keep the original included and let the negative contra net it out - do NOT do both. Currently both are applied, yielding -amount.",
+    "Apply the same reversal exclusion inside tender_pnl.cat_group() and item_cost.",
+    "Exclude reversed/contra txns from action_required.missing_proof.",
+    "Confirm the frontend Admin Reset action posts {\"confirm\":\"RESET\"} since the endpoint now 422s on an empty body."
+  ],
+  "critical_code_review_comments": [
+    "is_valid_cost() is defined inline inside dashboard() while tender_pnl() and item_cost repeat the same three predicates inline - extract one module-level helper so a future change can't drift across endpoints (this duplication is exactly what caused the reversal case to be missed).",
+    "reverse_txn() copies the whole source document (rev = dict(existing)) including document_id, reconciled flags and paid_by; this makes the contra entry indistinguishable from a real expense in every aggregation that does not explicitly check reverses_txn_id.",
+    "/app/backend/server.py is 1293 lines - close to the 700-line guideline; split routers (auth, transactions, reports, admin) into modules.",
+    "Dashboard loads up to 5000 transactions and aggregates in Python on every request; move to a MongoDB aggregation pipeline before data grows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rejection_exclusion.py",
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "94% (46/49 serial)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "DB was reset twice via POST /api/admin/reset {\"confirm\":\"RESET\"}; created TEST_REJ_001 tender plus TEST_ prefixed txns; final test_99_cleanup resets the DB again so the DB is left empty.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "Admin office.brightindiatraders@gmail.com / Admin@1234; Staff bharath@brightindiatraders.in / Staff@1234 (both valid, read from /app/memory/test_credentials.md)",
+  "context_for_next_testing_agent": "IMPORTANT: run pytest with -n 0 (serial). Both tests/backend_test.py and tests/test_rejection_exclusion.py call POST /api/admin/reset, so under the pytest.ini default -n 2 --dist loadscope they run in parallel workers and destroy each other's data (produced 10 spurious failures). Serial run: 46 pass, only test_11/test_12/test_13 in test_rejection_exclusion.py fail, all traceable to the single reversal double-exclusion bug (test_13 is a cascade of the -50000 leak and should pass once the reversal fix lands). Rejection exclusion (tests 01-09, 14, 15) is fully green. Frontend was not exercised this iteration.",
+  "rca_of_the_issue": "Original user-reported bug (rejected txn counted in Pre-Tender Expenses / Total Expenses / Contribution / EMD Outstanding) is resolved by is_valid_cost() in the dashboard endpoint and the equivalent inline guards in tender_pnl. However the same guard introduced a regression for reversals: the double-entry design already neutralises a reversed txn by inserting a mirroring -amount contra row, so excluding the flagged original as well subtracts the amount twice. Net dashboard/PnL cost becomes -amount instead of 0. Fix: treat the reversal pair as a unit - skip rows where reverses_txn_id is set in cost aggregations (recommended, keeps the is_valid_cost is_reversed check), or drop the is_reversed check and rely solely on the contra entry."
+}

@@ -319,6 +319,13 @@ async def next_txn_code() -> str:
 
 def now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
+def _is_active_cost(t: dict) -> bool:
+    """Single source of truth: only count txns that are not rejected, not reversed, and not contra-entries."""
+    return (t.get("payment_status") != "rejected"
+            and t.get("approval_status") != "rejected"
+            and not t.get("is_reversed")
+            and not t.get("reverses_txn_id"))
+
 def app_url(path: str = "") -> str:
     base = os.environ.get("APP_PUBLIC_URL") or ""
     return (base.rstrip("/") + "/" + path.lstrip("/")) if base else "https://app.example.com" + "/" + path.lstrip("/")
@@ -990,14 +997,17 @@ async def dashboard(user: dict = Depends(get_current_user)):
         rs = sum(r["amount"] for r in receipts if r["invoice_id"] == inv["id"])
         ls = sum(r.get("ld_deducted", 0) for r in receipts if r["invoice_id"] == inv["id"])
         total_receivable += max(inv["amount"] - rs - ls, 0)
-    total_payable = sum(t["amount"] for t in txns if t.get("payment_status") == "payable")
-    pending_approvals = sum(1 for t in txns if t.get("approval_status") == "pending")
-    pre_cost = sum(t["amount"] for t in txns if t.get("stage") == "pre_tender" and t["txn_type"] != "income")
-    post_cost = sum(t["amount"] for t in txns if t.get("stage") == "post_tender" and t["txn_type"] not in ("income", "refund"))
-    admin_cost = sum(t["amount"] for t in txns if t.get("stage") == "administration")
+    def is_valid_cost(t):
+        return _is_active_cost(t)
+
+    total_payable = sum(t["amount"] for t in txns if t.get("payment_status") == "payable" and is_valid_cost(t))
+    pending_approvals = sum(1 for t in txns if t.get("approval_status") == "pending" and t.get("payment_status") != "rejected")
+    pre_cost = sum(t["amount"] for t in txns if t.get("stage") == "pre_tender" and t["txn_type"] != "income" and is_valid_cost(t))
+    post_cost = sum(t["amount"] for t in txns if t.get("stage") == "post_tender" and t["txn_type"] not in ("income", "refund") and is_valid_cost(t))
+    admin_cost = sum(t["amount"] for t in txns if t.get("stage") == "administration" and is_valid_cost(t))
     ebg_blocked = sum(e["amount"] for e in ebg)
-    emd_paid = sum(t["amount"] for t in txns if t.get("category") == "EMD" and t["txn_type"] == "expense")
-    emd_refund = sum(t["amount"] for t in txns if t.get("category") == "EMD" and t["txn_type"] == "refund")
+    emd_paid = sum(t["amount"] for t in txns if t.get("category") == "EMD" and t["txn_type"] == "expense" and is_valid_cost(t))
+    emd_refund = sum(t["amount"] for t in txns if t.get("category") == "EMD" and t["txn_type"] == "refund" and is_valid_cost(t))
     emd_outstanding = emd_paid - emd_refund
 
     active_tenders = await db.tenders.count_documents({"status": {"$in": ["Participating", "L1", "AOC Received", "Execution"]}})
@@ -1020,7 +1030,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
     expiring.sort(key=lambda x: x["days_left"])
 
     # Action Required counts
-    missing_proof = sum(1 for t in txns if not t.get("document_id") and t.get("payment_status") in ("paid", "approved"))
+    missing_proof = sum(1 for t in txns if not t.get("document_id") and t.get("payment_status") in ("paid", "approved") and _is_active_cost(t))
     unmatched_bank = await db.bank_txns.count_documents({"reconciled": False})
     payables_overdue = sum(1 for t in txns if t.get("payment_status") == "payable" and t.get("due_date") and t["due_date"] < today.isoformat())
     receivables_overdue = 0
@@ -1033,7 +1043,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
     # Personal reimbursement rollup
     personal = {}
     for t in txns:
-        if t.get("paid_by") in ("Dad", "Bharath") and t.get("payment_status") in ("paid", "approved") and not t.get("is_reversed"):
+        if t.get("paid_by") in ("Dad", "Bharath") and t.get("payment_status") in ("paid", "approved") and _is_active_cost(t):
             k = t["paid_by"]; personal[k] = personal.get(k, 0) + t["amount"]
 
     return {
@@ -1070,6 +1080,7 @@ async def tender_pnl(tender_id: str, user: dict = Depends(get_current_user)):
         out = {}
         for t in txns:
             if t.get("stage") != stage or t.get("txn_type") == "income": continue
+            if not _is_active_cost(t): continue
             sign = -1 if t.get("txn_type") == "refund" else 1
             out[t["category"]] = out.get(t["category"], 0) + sign * t["amount"]
         return out
@@ -1080,7 +1091,9 @@ async def tender_pnl(tender_id: str, user: dict = Depends(get_current_user)):
     margin = (contribution / revenue * 100) if revenue else 0
     item_pnl = []
     for it in items:
-        item_cost = sum(t["amount"] for t in txns if t.get("item_id") == it["id"] and t.get("txn_type") not in ("income", "refund"))
+        item_cost = sum(t["amount"] for t in txns if t.get("item_id") == it["id"]
+            and t.get("txn_type") not in ("income", "refund")
+            and _is_active_cost(t))
         item_rev = (it.get("quantity", 0) or 0) * (it.get("rate", 0) or 0)
         item_pnl.append({"item_id": it["id"], "code": it.get("code"), "name": it["name"],
             "quantity": it.get("quantity"), "rate": it.get("rate"),
@@ -1101,7 +1114,7 @@ def _age_bucket(days: int) -> str:
 
 @api.get("/reports/payables")
 async def payables(user: dict = Depends(get_current_user)):
-    txns = await db.transactions.find({"payment_status": "payable"}, {"_id": 0}).to_list(1000)
+    txns = await db.transactions.find({"payment_status": "payable", "is_reversed": {"$ne": True}}, {"_id": 0}).to_list(1000)
     tenders = {t["id"]: t for t in await db.tenders.find({}, {"_id": 0}).to_list(1000)}
     today = _date.today()
     for t in txns:
@@ -1145,10 +1158,9 @@ async def personal_payments(user: dict = Depends(get_current_user)):
     """Rollup of payments made by Dad/Bharath/Other personally that need reimbursement."""
     txns = await db.transactions.find({"paid_by": {"$in": ["Dad", "Bharath", "Other"]}}, {"_id": 0}).to_list(2000)
     tenders = {t["id"]: t for t in await db.tenders.find({}, {"_id": 0}).to_list(1000)}
-    # Group by paid_by
     by_person = {}
     for t in txns:
-        if t.get("is_reversed"): continue
+        if not _is_active_cost(t): continue
         p = t["paid_by"]; by_person.setdefault(p, {"total": 0.0, "transactions": []})
         by_person[p]["total"] += t["amount"] * (-1 if t["txn_type"] == "reimbursement" else 1)
         t["tender_code"] = tenders.get(t.get("tender_id"), {}).get("code", t.get("tender_id") or "-")
