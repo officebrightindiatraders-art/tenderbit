@@ -1,0 +1,26 @@
+{
+  "summary": "Frontend-only verification of the useNavigate import fix on TenderDetail. Logged in as admin, created a fresh tender via Manual Entry (BIT-2026-002 / TEST_QA Tender Detail Fix), opened /tenders/{id} — page rendered fully (header, KPI cards, Contract Items, Department Invoices, Item-level P&L, Documents) with NO 'useNavigate is not defined' overlay and zero console/page errors. Actions menu (3-dot) opened showing Edit/Archive/Delete; Edit modal (edit-tender-form) opened and cancelled cleanly; Delete modal (delete-tender-modal) opened, final button correctly disabled until the tender code was typed, then delete succeeded with 'Tender deleted' toast and redirect to /tenders (the exact path that previously crashed). Sanity-swept all 10 routes (Dashboard, Tenders, Transactions, Approvals, Bank, EBG, Money In, Money Out, Personal Payments, Reports) — no crashes, no console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "TenderDetail", "issues": ["Breadcrumb shows the raw tender UUID (64f097bf-2ae9-...) instead of the human-readable tender code (BIT-2026-002) — cosmetic only"]},
+      {"screen": "TenderDetail / Reports filters", "issues": ["Native HTML <select> elements are used for Status and the Reports filter row instead of the shadcn Select component; styling is acceptable but inconsistent with the rest of the design system"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "TenderDetail.jsx line 2 now correctly imports useNavigate — fix confirmed at runtime; no other react-router hook is used without import in this file.",
+    "Optional polish: render tender.code in the breadcrumb instead of the route id param."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% (all targeted flows passed)"},
+  "seed_data_creation": "Created tender BIT-2026-002 'TEST_QA Tender Detail Fix' via Manual Entry and permanently deleted it as part of the delete-flow test — no residual test data. Pre-existing BIT-2026-001 untouched.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "test_credentials": "admin office.brightindiatraders@gmail.com / Admin@1234 — works",
+  "context_for_next_testing_agent": "TenderDetail render + actions menu + Edit/Delete modal + post-delete redirect are all verified working (iteration 7). Archive action was NOT exercised because it uses window.prompt() (blocks Playwright unless a dialog handler is registered) — register page.on('dialog') if testing it. Backend still has the open minor issue from iteration 6: POST /api/tenders/{id}/unarchive returns 200 for unknown ids instead of 404.",
+  "rca_of_the_issue": "Original crash: `const nav = useNavigate()` was called in TenderDetail while only useParams/Link were imported from react-router-dom, so the identifier was undefined at render time. Fixed by adding useNavigate to the import; verified page renders and nav('/tenders') executes after delete."
+}
