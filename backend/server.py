@@ -320,8 +320,14 @@ async def next_txn_code() -> str:
 def now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
 def _is_active_cost(t: dict) -> bool:
-    """Single source of truth: only count txns that are not rejected, not reversed, and not contra-entries."""
-    return (t.get("payment_status") != "rejected"
+    """Single source of truth: a txn contributes to totals ONLY if:
+       - it is approved / paid / payable (never 'requested' or 'rejected')
+       - it is not reversed, and not a contra-entry.
+       Income transactions bypass this check (receipts always count).
+    """
+    if t.get("txn_type") == "income":
+        return not t.get("is_reversed") and not t.get("reverses_txn_id")
+    return (t.get("payment_status") in ("approved", "paid", "payable")
             and t.get("approval_status") != "rejected"
             and not t.get("is_reversed")
             and not t.get("reverses_txn_id"))
@@ -826,6 +832,39 @@ async def approve_txn(txn_id: str, body: ApprovalAction, user: dict = Depends(re
             email_html=_email_frame(f"Expense {verb}", body_html),
             email_subject=f"Your expense {existing['code']} was {verb}")
     return {"ok": True}
+
+@api.patch("/transactions/{txn_id}")
+async def update_txn(txn_id: str, payload: dict, user: dict = Depends(not_viewer)):
+    existing = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
+    if not existing: raise HTTPException(404, "Not found")
+    if existing.get("is_reversed"): raise HTTPException(400, "Cannot edit a reversed transaction")
+    if existing.get("reverses_txn_id"): raise HTTPException(400, "Cannot edit a reversal contra entry")
+    if user["role"] != "admin" and existing.get("payment_status") in ("paid", "approved"):
+        raise HTTPException(403, "Only admin can edit approved/paid transactions")
+    allowed = {"date", "category", "description", "vendor", "amount", "quantity", "rate",
+               "gst", "paid_by", "account", "invoice_no", "invoice_date", "due_date",
+               "item_id", "remarks"}
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates: raise HTTPException(400, "Nothing to update")
+    await db.transactions.update_one({"id": txn_id}, {"$set": updates})
+    after = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
+    await audit_write("transaction", txn_id, "edit", user["email"], before=existing, after=after,
+                      note=", ".join(f"{k}: {existing.get(k)!r}→{updates[k]!r}" for k in updates))
+    return after
+
+
+@api.delete("/transactions/{txn_id}")
+async def delete_txn(txn_id: str, user: dict = Depends(require_admin)):
+    """Hard-delete only 'requested' or 'rejected' transactions. For paid/approved use reverse."""
+    existing = await db.transactions.find_one({"id": txn_id}, {"_id": 0})
+    if not existing: raise HTTPException(404, "Not found")
+    if existing.get("payment_status") in ("paid", "approved"):
+        raise HTTPException(409, "Paid/approved transactions cannot be deleted — use Reverse instead so the history stays traceable.")
+    await db.transactions.delete_one({"id": txn_id})
+    await audit_write("transaction", txn_id, "delete", user["email"], before=existing,
+                      note=f"Hard-deleted (status was {existing.get('payment_status')})")
+    return {"ok": True}
+
 
 @api.post("/transactions/{txn_id}/pay")
 async def pay_txn(txn_id: str, body: PayTxn, user: dict = Depends(not_viewer)):

@@ -4,7 +4,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { formatINR, formatDate, todayISO } from '@/lib/format';
 import { toast } from 'sonner';
-import { Plus, X, Upload, Filter, RotateCcw, FileText as FileIcon, ExternalLink, Sparkles, Bookmark, Save } from 'lucide-react';
+import { Plus, X, Upload, Filter, RotateCcw, FileText as FileIcon, ExternalLink, Sparkles, Bookmark, Save, Edit3, Trash2 } from 'lucide-react';
 
 const statusPill = (s) => ({
   requested: 'pill-warning', approved: 'pill-primary', paid: 'pill-success',
@@ -214,8 +214,11 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadedName, setUploadedName] = useState('');
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewType, setPreviewType] = useState(''); // 'image' | 'pdf'
 
   useEffect(() => { api.get('/vendors').then((r) => setVendors(r.data)); }, []);
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   useEffect(() => {
     if (form.tender_id && form.tender_id !== 'COMPANY') {
       api.get(`/items?tender_id=${form.tender_id}`).then((r) => setItems(r.data));
@@ -244,12 +247,15 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
 
   const extractFromBill = async (e) => {
     const file = e.target.files?.[0]; if (!file) return;
+    // Build a local preview immediately
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    setPreviewType(file.type.startsWith('image/') ? 'image' : 'pdf');
     setUploading(true);
     const fd = new FormData(); fd.append('file', file);
     try {
-      // First extract fields
       const { data: ex } = await api.post('/extract/bill', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-      // Then upload the bill as proof
       const fd2 = new FormData(); fd2.append('file', file);
       const { data: up } = await api.post('/files/upload', fd2, { headers: { 'Content-Type': 'multipart/form-data' } });
       setForm((f) => ({
@@ -284,7 +290,7 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 z-40 bg-slate-900/40 flex items-start justify-center pt-10 px-4 overflow-y-auto">
-      <div className="bg-white w-full max-w-3xl rounded-sm border border-slate-200 shadow-lg mb-10" data-testid="txn-form">
+      <div className={`bg-white w-full ${previewUrl ? 'max-w-6xl' : 'max-w-3xl'} rounded-sm border border-slate-200 shadow-lg mb-10 transition-all`} data-testid="txn-form">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <h3 className="font-display text-lg font-semibold">
             {step === 'what' ? 'New Transaction — What is it about?' : `New ${stage.replace('_', ' ')} transaction`}
@@ -313,6 +319,21 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
 
         {step === 'details' && (
           <form onSubmit={submit}>
+            <div className={`grid ${previewUrl ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {previewUrl && (
+              <div className="border-r border-slate-200 bg-slate-50 p-4 relative">
+                <div className="section-label mb-2 flex items-center justify-between">
+                  <span>Bill Preview</span>
+                  <button type="button" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(''); }} className="text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
+                </div>
+                {previewType === 'image' ? (
+                  <img src={previewUrl} alt="Bill preview" className="w-full max-h-[70vh] object-contain rounded-sm border border-slate-200 bg-white" />
+                ) : (
+                  <iframe src={previewUrl} title="Bill PDF" className="w-full h-[70vh] rounded-sm border border-slate-200 bg-white" />
+                )}
+                <div className="text-[10px] text-slate-500 mt-2 truncate">{uploadedName}</div>
+              </div>
+            )}
             <div className="p-6 grid grid-cols-3 gap-4">
               <L label="Category *">
                 <select required value={form.category} onChange={(e) => upd('category', e.target.value)} className={inp} data-testid="tx-category">
@@ -385,6 +406,7 @@ function TxnForm({ masters, tenders, isAdmin, onClose, onSaved }) {
                 <input value={form.description} onChange={(e) => upd('description', e.target.value)} className={inp} />
               </label>
             </div>
+            </div>
             <div className="px-6 py-4 border-t border-slate-200 flex justify-between items-center bg-slate-50">
               <button type="button" onClick={() => setStep('what')} className="text-xs text-slate-500 hover:text-slate-800">← Change type</button>
               <div className="flex gap-2">
@@ -405,6 +427,7 @@ function TxnDetail({ data, isAdmin, onClose, onChange }) {
   const [tab, setTab] = useState('basic');
   const [reversing, setReversing] = useState(false);
   const [reason, setReason] = useState('');
+  const [editing, setEditing] = useState(false);
 
   const reverse = async () => {
     if (!reason.trim()) { toast.error('Enter a reason'); return; }
@@ -539,21 +562,88 @@ function TxnDetail({ data, isAdmin, onClose, onChange }) {
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center">
-          {isAdmin && !t.is_reversed && !reversing && (
-            <button onClick={() => setReversing(true)} className="text-xs text-red-600 hover:text-red-800">Reverse Transaction…</button>
-          )}
-          {isAdmin && reversing && (
-            <div className="flex items-center gap-2 flex-1 max-w-lg">
-              <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason for reversal *"
-                className="flex-1 px-2 py-1 text-xs border border-slate-300 rounded-sm" />
-              <button onClick={reverse} className="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded-sm">Confirm</button>
-              <button onClick={() => setReversing(false)} className="px-2 py-1 text-xs text-slate-500">Cancel</button>
-            </div>
-          )}
-          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-sm ml-auto">Close</button>
+        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center gap-2">
+          <div className="flex items-center gap-2">
+            {!t.is_reversed && !t.reverses_txn_id && !reversing && (
+              <>
+                <button data-testid="txn-edit-btn" onClick={() => setEditing(true)} className="text-xs px-2.5 py-1 border border-slate-300 hover:bg-slate-100 rounded-sm flex items-center gap-1">
+                  <Edit3 className="w-3 h-3" /> Edit
+                </button>
+                {isAdmin && ['requested', 'rejected', 'payable'].includes(t.payment_status) && (
+                  <button data-testid="txn-delete-btn" onClick={async () => {
+                    if (!window.confirm(`Permanently delete ${t.code}? This is only allowed because it hasn't been paid or approved yet.`)) return;
+                    try { await api.delete(`/transactions/${t.id}`); toast.success('Deleted'); onChange(); onClose(); }
+                    catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+                  }} className="text-xs px-2.5 py-1 border border-red-300 text-red-700 hover:bg-red-50 rounded-sm flex items-center gap-1">
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                )}
+                {isAdmin && ['paid', 'approved'].includes(t.payment_status) && (
+                  <button data-testid="txn-reverse-btn" onClick={() => setReversing(true)} className="text-xs px-2.5 py-1 border border-amber-300 text-amber-700 hover:bg-amber-50 rounded-sm">Reverse…</button>
+                )}
+              </>
+            )}
+            {reversing && (
+              <div className="flex items-center gap-2 flex-1 max-w-lg">
+                <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason for reversal *"
+                  className="flex-1 px-2 py-1 text-xs border border-slate-300 rounded-sm" />
+                <button onClick={reverse} className="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded-sm">Confirm</button>
+                <button onClick={() => setReversing(false)} className="px-2 py-1 text-xs text-slate-500">Cancel</button>
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-sm">Close</button>
         </div>
+        {editing && <EditTxnModal txn={t} isAdmin={isAdmin} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onChange(); }} />}
       </div>
+    </div>
+  );
+}
+
+function EditTxnModal({ txn, isAdmin, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    date: txn.date || '', category: txn.category || '', vendor: txn.vendor || '',
+    amount: txn.amount || 0, description: txn.description || '',
+    paid_by: txn.paid_by || '', account: txn.account || '',
+    invoice_no: txn.invoice_no || '', invoice_date: txn.invoice_date || '',
+    due_date: txn.due_date || '', remarks: txn.remarks || '',
+  });
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.patch(`/transactions/${txn.id}`, form);
+      toast.success('Transaction updated');
+      onSaved();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+    finally { setBusy(false); }
+  };
+  const upd = (k, v) => setForm({ ...form, [k]: v });
+  return (
+    <div className="fixed inset-0 z-[60] bg-slate-900/50 flex items-start justify-center pt-16 px-4 overflow-y-auto">
+      <form onSubmit={submit} className="bg-white w-full max-w-2xl rounded-sm border border-slate-200 shadow-xl mb-10" data-testid="edit-txn-form">
+        <div className="px-6 py-4 border-b border-slate-200 flex justify-between items-center">
+          <div><h3 className="font-display text-lg font-semibold">Edit Transaction</h3><div className="text-xs text-slate-500 mt-0.5 font-mono">{txn.code}</div></div>
+          <button type="button" onClick={onClose}><X className="w-5 h-5 text-slate-400" /></button>
+        </div>
+        <div className="p-6 grid grid-cols-2 gap-4">
+          <L label="Date"><input type="date" value={form.date} onChange={(e) => upd('date', e.target.value)} className={inp} /></L>
+          <L label="Category"><input value={form.category} onChange={(e) => upd('category', e.target.value)} className={inp} /></L>
+          <L label="Amount (₹)"><input type="number" step="0.01" value={form.amount} onChange={(e) => upd('amount', parseFloat(e.target.value) || 0)} className={inp} data-testid="edit-amount" /></L>
+          <L label="Vendor"><input value={form.vendor} onChange={(e) => upd('vendor', e.target.value)} className={inp} /></L>
+          <L label="Paid By"><input value={form.paid_by} onChange={(e) => upd('paid_by', e.target.value)} className={inp} /></L>
+          <L label="Account"><input value={form.account} onChange={(e) => upd('account', e.target.value)} className={inp} /></L>
+          <L label="Invoice No"><input value={form.invoice_no} onChange={(e) => upd('invoice_no', e.target.value)} className={inp} /></L>
+          <L label="Invoice Date"><input type="date" value={form.invoice_date || ''} onChange={(e) => upd('invoice_date', e.target.value)} className={inp} /></L>
+          <label className="col-span-2 block"><span className="block text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Description</span>
+            <input value={form.description} onChange={(e) => upd('description', e.target.value)} className={inp} /></label>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-sm">Cancel</button>
+          <button type="submit" disabled={busy} data-testid="edit-txn-save" className="px-4 py-2 text-sm bg-[#1E1B4B] hover:bg-[#312e81] text-white rounded-sm">{busy ? 'Saving…' : 'Save changes'}</button>
+        </div>
+      </form>
     </div>
   );
 }

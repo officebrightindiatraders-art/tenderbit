@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 8 full-stack test of (1) approval visibility rule, (2) transaction edit/delete, (3) bill preview UI. Backend: added /app/backend/tests/test_approval_rule_edit_delete.py (18 tests) covering requested-excluded-from-KPIs, approve-makes-it-count, payable counts as accrual cost, PATCH happy path + persistence + audit diff + 400 on disallowed-only keys + 400 on reversed txn + 404 unknown + 403 staff-on-approved, DELETE requested/rejected/payable=200, paid/approved=409 with 'Reverse' hint, staff=403, unknown=404. Fixed one stale assertion in test_rejection_exclusion.py (it asserted a 'requested' txn was counted pre-rejection). Ran the whole suite serially (-n 0): 87/87 passed. Frontend (Playwright, admin + staff): txn row -> detail modal; Edit button always visible for non-reversed rows; Delete only for admin on requested/rejected/payable; Reverse only for admin on paid/approved; staff sees neither. Edit modal (edit-txn-form) changed amount 50000->45000, saved, detail + list row + list total refreshed instantly. Delete on a requested row shows the native confirm and removes the row. Dashboard visually confirmed: PRE-TENDER EXPENSES = Rs.0 while the 50k EMD was 'requested', and Rs.50.0K immediately after approving it from the Approvals page. Bill preview: uploading a file to the green AI input widened the modal to max-w-6xl, rendered the left 'BILL PREVIEW' panel with the image, and the (X) removed the preview and returned the modal to max-w-3xl.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/extract/bill", "issue": "Gemini/litellm errors are not caught -> endpoint returns HTTP 500 with a stack trace in logs (reproduced: 'Unable to process input image' for a low-detail PNG). Should return 422/502 with a friendly detail so the UI toast is meaningful."},
+      {"endpoint": "GET /api/transactions", "issue": "total_expense / total_income are raw sums of all listed rows, so a 'requested' or 'rejected' row still inflates the 'Total Rs.X' figure shown in the Transactions page header, while all dashboard KPIs correctly exclude it. Decide whether this list footer should follow the same approval rule (it currently does not)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Transactions / TxnDetail delete handler", "issue": "After a successful DELETE the handler calls onChange() which runs openTxn(deletedId) -> GET /api/transactions/{id}/details returns 404 -> unhandled axios rejection -> full-screen CRA 'Uncaught runtime errors: Request failed with status code 404' overlay covers the page (row is deleted and toast shown, so it is purely the refetch). Fix: on delete call only load() + onClose() (or add .catch in openTxn).", "selector": "[data-testid=\"txn-delete-btn\"]", "priority": "HIGH"},
+      {"component": "Transactions data fetches", "issue": "openTxn() and the ?txn= auto-open effect have no .catch, so any failing detail fetch surfaces as an unhandled rejection instead of a toast.", "selector": "[data-testid^=\"txn-row-\"]", "priority": "MEDIUM"},
+      {"component": "TxnDetail footer (staff role)", "issue": "Edit button is shown to staff even for approved/paid rows; clicking through only fails at save time with 'Only admin can edit approved/paid transactions'. Hide/disable Edit for staff when payment_status is approved/paid.", "selector": "[data-testid=\"txn-edit-btn\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "New Transaction form (tender <select>)", "issues": ["React console error 'In HTML, <span> cannot be a child of <option>' logged on every render of the tender dropdown (native <select> option children) - hydration warning noise", "Native HTML selects still used across the txn form / filters instead of the shadcn Select component"]},
+      {"screen": "Bill preview panel", "issues": ["Preview panel has no filename/zoom/open-in-new-tab affordance; for a tall bill the 70vh image is small on 1080p. Cosmetic only."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_approval_rule_edit_delete.py",
+    "/app/backend/tests/test_rejection_exclusion.py",
+    "/app/backend/tests/seed_ui_data.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix the post-delete 404 unhandled rejection in Transactions.jsx (do not refetch the deleted txn's details; call load() + onClose()).",
+    "Wrap /api/extract/bill LLM call in try/except and return 422/502 with a readable detail.",
+    "Decide/align the Transactions list header 'Total' with the approval rule (currently includes requested/rejected rows).",
+    "Optional: hide Edit for staff on approved/paid rows; fix the <span> inside <option> React warning."
+  ],
+  "critical_code_review_comments": [
+    "_is_active_cost is now the single source of truth and is used consistently in dashboard, tender-pnl, payables, missing_proof and personal-payments aggregations - verified by tests.",
+    "PATCH /transactions whitelist correctly blocks payment_status/approval_status/code escalation and returns 400 when nothing whitelisted is sent; audit entry stores full before/after plus a readable diff note.",
+    "DELETE /transactions is admin-only and returns 409 for paid/approved with the 'use Reverse' hint - good; consider soft-delete for auditability even on requested rows (currently a hard delete, only the audit doc survives).",
+    "server.py is 1410 lines - consider splitting routers (transactions/reports/tenders) into modules."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_approval_rule_edit_delete.py (new)",
+    "/app/backend/tests/seed_ui_data.py (new, UI seed helper)",
+    "/app/backend/tests/test_rejection_exclusion.py (stale assertion updated for new approval rule)",
+    "/app/frontend/src/pages/Transactions.jsx (added data-testid=\"txn-reverse-btn\" only)"
+  ],
+  "success_rate": {"backend": "100% (87/87 pytest, serial -n 0)", "frontend": "90% (all targeted flows work; 1 HIGH post-delete unhandled-404 overlay)"},
+  "seed_data_creation": "Created TEST_UI tender + requested/paid txns via /app/backend/tests/seed_ui_data.py for the UI run; DB was reset with POST /api/admin/reset {\"confirm\":\"RESET\"} at the end, so no residual test data (dashboard total_actual_cost = 0).",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin office.brightindiatraders@gmail.com / Admin@1234 and staff bharath@brightindiatraders.in / Staff@1234 - both work",
+  "context_for_next_testing_agent": "DB is empty after this run (admin reset). Seed with `python /app/backend/tests/seed_ui_data.py` (prints tender id + TXN codes) before frontend runs. Reverse button now has data-testid=txn-reverse-btn. Delete uses window.confirm -> register page.on('dialog'). Bill preview can be exercised with set_input_files on '[data-testid=\"tx-ai-bill\"] input[type=file]'; a synthetic blank PNG makes Gemini return 400 -> backend 500, so the preview UI can be validated without a real bill. Approval-rule + edit/delete backend coverage lives in test_approval_rule_edit_delete.py.",
+  "rca_of_the_issue": "Post-delete overlay: TxnDetail's delete handler runs onChange() (defined as `openTxn(selectedTxn.transaction.id); load();`) before onClose(); the txn no longer exists so GET /api/transactions/{id}/details 404s inside an un-caught promise, producing the React dev error overlay. /api/extract/bill 500: emergentintegrations ChatError from Gemini 400 propagates uncaught out of extract_bill (server.py ~line 510)."
+}

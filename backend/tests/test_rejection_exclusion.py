@@ -95,7 +95,8 @@ class TestRejectedReversedExclusion:
         ctx["store"]["rej_id"] = d["id"]
 
         dash = ctx["s"].get(f"{API}/reports/dashboard", headers=ctx["AH"], timeout=30).json()
-        assert dash["pre_tender_cost"] == REJECT_AMOUNT, "pre-reject baseline should include the txn"
+        # Iteration 8 approval rule: 'requested' txns must NOT be counted in cost KPIs
+        assert dash["pre_tender_cost"] == 0, "requested txn must be excluded from pre_tender_cost"
         assert dash["pending_approvals"] == 1
 
     def test_04_admin_rejects(self, ctx):
